@@ -928,6 +928,38 @@ static void test_predict_does_not_change_depth(void)
     network_free(net);
 }
 
+
+static void test_scale_every_layer(void)
+{
+    section("scale / add / remove every layer on frozen type-nn");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_init_weights(net);
+    EXPECT(network_depth(net) == 1, "one layer");
+    layer_align_inputs(net->head, 5);
+    EXPECT(net->head->in_size == 5, "head in scaled up");
+    layer_align_inputs(net->head, 2);
+    EXPECT(net->head->in_size == 2, "head in scaled down");
+    layer_set_outputs(net->head, 3);
+    EXPECT(net->head->out_size == 3, "head out scaled up");
+    layer_set_outputs(net->head, 1);
+    EXPECT(net->head->out_size == 1, "head out scaled down");
+    Layer *hid = network_insert_identity(net, net->tail);
+    EXPECT(network_depth(net) == 2, "hidden added");
+    EXPECT(hid != NULL, "identity layer");
+    layer_set_outputs(hid, 4);
+    layer_align_inputs(net->tail, 4);
+    EXPECT(hid->out_size == 4, "hidden out scaled");
+    EXPECT(net->tail->in_size == 4, "tail in follows hidden");
+    layer_set_outputs(hid, 2);
+    layer_align_inputs(net->tail, 2);
+    EXPECT(hid->out_size == 2, "hidden out shrunk");
+    EXPECT(network_remove_layer(net, hid) == 0, "hidden removed");
+    EXPECT(network_depth(net) == 1, "back to one layer");
+    EXPECT(network_remove_layer(net, net->tail) == -1, "cannot drop last");
+    network_free(net);
+}
+
 int main(void)
 {
     printf("╔══════════════════════════════════════════════╗\n");
@@ -941,6 +973,7 @@ int main(void)
     test_grow_outputs();
     test_align_inputs_shrink();
     test_insert_remove_layer();
+    test_scale_every_layer();
     test_or_growth_during_backprop();
     test_auto_layer_insert();
     test_multi_layer_stack();

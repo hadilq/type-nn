@@ -450,6 +450,27 @@ static void optn_free(void *ctx)
     free(N);
 }
 
+
+static void optn_scale(void *c, size_t idx, size_t in, size_t out)
+{
+    OptNet *N = c;
+    if (idx >= N->depth) return;
+    layer_resize_in(&N->layer[idx], in);
+    layer_resize_out(&N->layer[idx], out, N);
+    if (idx + 1 < N->depth) layer_resize_in(&N->layer[idx + 1], out);
+    if (idx > 0) layer_resize_out(&N->layer[idx - 1], in, N);
+}
+static size_t optn_lin(void *c, size_t idx)
+{
+    OptNet *N = c;
+    return idx < N->depth ? N->layer[idx].in : 0;
+}
+static size_t optn_lout(void *c, size_t idx)
+{
+    OptNet *N = c;
+    return idx < N->depth ? N->layer[idx].out : 0;
+}
+
 AltNet type_nn_opt_q8_open(size_t in, size_t out)
 {
     OptNet *N = (OptNet *)calloc(1, sizeof(OptNet));
@@ -476,6 +497,7 @@ AltNet type_nn_opt_q8_open(size_t in, size_t out)
         .param_count = optn_params,
         .nbytes = optn_nbytes,
         .free = optn_free,
+        .scale_layer = optn_scale, .layer_in = optn_lin, .layer_out = optn_lout,
     };
     return h;
 }

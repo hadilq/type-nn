@@ -108,7 +108,7 @@ static void bench_xor(AltNet (*open)(size_t, size_t))
     double *X[4], *Y[4];
     for (int i = 0; i < 4; i++) { X[i] = Xd[i]; Y[i] = Yd[i]; }
     AltNet a = open(2, 1);
-    a.set_dynamic(a.ctx, 0);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strncmp(a.impl, "type-nn-dyn", 11) == 0);
     run_xy("xor", &a, X, Y, 4, 400, 0.08, 20000, -1.0);
     a.free(a.ctx);
 }
@@ -127,7 +127,7 @@ static void bench_quadratic(AltNet (*open)(size_t, size_t))
         Y[i][0] = X[i][0] * X[i][1] + 0.25 * X[i][0];
     }
     AltNet a = open(2, 1);
-    a.set_dynamic(a.ctx, 0);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strncmp(a.impl, "type-nn-dyn", 11) == 0);
     run_xy("quadratic", &a, X, Y, N, 200, 0.04, 5000, -1.0);
     a.free(a.ctx);
     for (size_t i = 0; i < N; i++) { free(X[i]); free(Y[i]); }
@@ -149,7 +149,7 @@ static void bench_mlp(AltNet (*open)(size_t, size_t))
             Y[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.3;
     }
     AltNet a = open(IN, OUT);
-    a.set_dynamic(a.ctx, 0);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strncmp(a.impl, "type-nn-dyn", 11) == 0);
     run_xy("mlp32x16x8", &a, X, Y, N, 30, 0.01, 1000, -1.0);
     a.free(a.ctx);
     for (size_t i = 0; i < N; i++) { free(X[i]); free(Y[i]); }
@@ -174,7 +174,7 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     dataset_standardize_inputs(&ds);
     if (!ds.classification) dataset_minmax_outputs(&ds);
     AltNet a = open(ds.in, ds.out);
-    a.set_dynamic(a.ctx, 0);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strncmp(a.impl, "type-nn-dyn", 11) == 0);
     srand(34972);
     a.init(a.ctx);
     double t0 = wall_s();

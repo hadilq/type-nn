@@ -155,6 +155,23 @@ static void net_free(void *c)
     free(N);
 }
 
+
+static void net_scale(void *c, size_t idx, size_t in, size_t out)
+{
+    BPNet *N = c;
+    lk_scale_arr(N->layer, N->depth, idx, in, out);
+}
+static size_t net_lin(void *c, size_t idx)
+{
+    BPNet *N = c;
+    return idx < N->depth ? N->layer[idx].in : 0;
+}
+static size_t net_lout(void *c, size_t idx)
+{
+    BPNet *N = c;
+    return idx < N->depth ? N->layer[idx].out : 0;
+}
+
 AltNet type_nn_bp_open(size_t in, size_t out)
 {
     BPNet *N = (BPNet *)calloc(1, sizeof(BPNet));
@@ -167,7 +184,8 @@ AltNet type_nn_bp_open(size_t in, size_t out)
         .set_or_factors=net_k, .insert_identity=net_ins,
         .remove_hidden=net_rem, .set_dynamic=net_dyn,
         .depth=net_depth, .or_factors=net_kf,
-        .param_count=net_params, .nbytes=net_nbytes, .free=net_free
+        .param_count=net_params, .nbytes=net_nbytes, .free=net_free,
+        .scale_layer=net_scale, .layer_in=net_lin, .layer_out=net_lout
     };
     return h;
 }

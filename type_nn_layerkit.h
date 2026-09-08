@@ -178,4 +178,15 @@ static inline void lk_set_k(LKLayer *L, size_t nk)
     L->k = nk; L->n_or = n1;
 }
 
+
+static inline void lk_scale_arr(LKLayer *L, size_t depth, size_t idx, size_t in, size_t out)
+{
+    if (idx >= depth) return;
+    lk_resize_in(&L[idx], in);
+    lk_resize_out(&L[idx], out);
+    if (idx + 1 < depth) lk_resize_in(&L[idx + 1], out);
+    if (idx > 0) lk_resize_out(&L[idx - 1], in);
+}
+
 #endif
+

@@ -245,6 +245,26 @@ static void net_free(void *c)
     free(N);
 }
 
+
+static void net_scale(void *c, size_t idx, size_t in, size_t out)
+{
+    AdNet *N = c;
+    if (idx >= N->depth) return;
+    lk_resize_in(&N->layer[idx].L, in);
+    lk_resize_out(&N->layer[idx].L, out);
+    if (idx + 1 < N->depth) lk_resize_in(&N->layer[idx + 1].L, out);
+    if (idx > 0) lk_resize_out(&N->layer[idx - 1].L, in);
+}
+static size_t net_lin(void *c, size_t idx)
+{
+    AdNet *N = c;
+    return idx < N->depth ? N->layer[idx].L.in : 0;
+}
+static size_t net_lout(void *c, size_t idx)
+{
+    AdNet *N = c;
+    return idx < N->depth ? N->layer[idx].L.out : 0;
+}
 AltNet type_nn_adam_open(size_t in, size_t out)
 {
     AdNet *N = (AdNet *)calloc(1, sizeof(AdNet));
@@ -258,7 +278,8 @@ AltNet type_nn_adam_open(size_t in, size_t out)
         .set_or_factors = net_k, .insert_identity = net_ins,
         .remove_hidden = net_rem, .set_dynamic = net_dyn,
         .depth = net_depth, .or_factors = net_kf,
-        .param_count = net_params, .nbytes = net_nbytes, .free = net_free
+        .param_count = net_params, .nbytes = net_nbytes, .free = net_free,
+        .scale_layer = net_scale, .layer_in = net_lin, .layer_out = net_lout
     };
     return h;
 }

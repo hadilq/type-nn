@@ -239,3 +239,47 @@ Adam is the first layout that brings WDBC MSE down from ~190 to <1
 (the product of affines on 30-D z-scored inputs explodes under plain
 SGD). Momentum needs a gentler μ than the CNN default 0.9 — 0.5 fits
 XOR. Moments cost 2× (mom) or 3× (adam) the payload.
+
+`type-nn-bpgemm` is the second backward pass: `dx = Wᵀ dOr`,
+`W ← W − lr dOr xᵀ`, prefix/suffix `dOr`, reused scratch, no malloc on
+the hot path. `test_alts` now checks identity insert/remove, input
+grow/shrink (zero-padded columns keep the mapping), Or-count grow
+(new factor ≈ 1), output grow/shrink, and a backward step through an
+identity hidden layer on every faithful layout.
+
+
+### Dynamic models and scale tests
+
+Every `type-nn-*` layout is covered by `test_alts` for:
+
+- input grow/shrink, output grow/shrink, Or-count grow/shrink
+- add two identity layers / remove them
+- **per-layer** `scale_layer(idx, in, out)` that stitches the neighbour
+  (hidden out ↔ next in)
+
+`type-nn-dyn` actually uses those ops during training: residual-driven
+Or growth, identity insert, hidden-width grow, and unused-Or shrink.
+Bench enables `set_dynamic(1)` only for that impl. Rows sort by
+`(mse, params, nbytes, infer, train)` so quality leads.
+
+
+## Dynamic policy (stall → grow, idle → shrink)
+
+A change is allowed only after `SETTLE` steps if EMA residual has not
+dropped (`ema > 0.97 * ema_at_last_change` and above a floor). New
+structure is an identity (extra Or `= 1`, extra And with tail column 0,
+or a frozen identity layer) and stays **frozen** for `FREEZE` steps.
+
+| impl | axes | XOR mse | Iris acc | WDBC mse | WDBC params | WDBC µs |
+|------|------|---------|----------|----------|-------------|---------|
+| type-nn-opt | none (SGD) | 0 | 0.90 | 190.6 | 62 | 0.046 |
+| type-nn-adam | none (Adam) | ~3e-6 | 0.69 | 0.80 | 62 | 0.038 |
+| type-nn-dyn-k | k only | 0 | 0.90 | 231 | 93 | 0.054 |
+| type-nn-dyn-w | width | 0 | 0.90 | 268 | 1922 | 0.87 |
+| type-nn-dyn-l | depth | 0 | 0.90 | 268 | 1922 | 0.86 |
+| type-nn-dyn-sgd | k+w+L SGD | 0 | 0.90 | 231 | 93 | 0.055 |
+| **type-nn-dyn** | k+w+L **Adam** | **0** | 0.65 | **0.53** | **62** | **0.038** |
+
+Winner is Adam + the stall/idle policy: on WDBC it beats plain Adam
+(0.53 vs 0.80) without growing the net. Width/depth-only SGD over-grows
+because a product layer's residual stays large even after a change.

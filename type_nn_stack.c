@@ -265,6 +265,30 @@ static void stack_set_dyn(void *ctx, int on)
     ((TStack *)ctx)->dynamic = on ? 1 : 0;
 }
 
+static void stack_scale(void *ctx, size_t idx, size_t in, size_t out)
+{
+    TStack *s = (TStack *)ctx;
+    if (idx >= s->depth) return;
+    s->ops->resize_in(s->layer[idx], in);
+    s->ops->resize_out(s->layer[idx], out);
+    if (idx + 1 < s->depth)
+        s->ops->resize_in(s->layer[idx + 1], out);
+    if (idx > 0)
+        s->ops->resize_out(s->layer[idx - 1], in);
+}
+static size_t stack_lin(void *ctx, size_t idx)
+{
+    TStack *s = (TStack *)ctx;
+    if (idx >= s->depth) return 0;
+    return s->ops->in(s->layer[idx]);
+}
+static size_t stack_lout(void *ctx, size_t idx)
+{
+    TStack *s = (TStack *)ctx;
+    if (idx >= s->depth) return 0;
+    return s->ops->out(s->layer[idx]);
+}
+
 static size_t stack_depth(void *ctx) { return ((TStack *)ctx)->depth; }
 
 static size_t stack_k(void *ctx)
@@ -333,6 +357,9 @@ void tstack_bind(AltNet *dst, TStack *s)
     dst->param_count = stack_params;
     dst->nbytes = stack_nbytes;
     dst->free = stack_free;
+    dst->scale_layer = stack_scale;
+    dst->layer_in = stack_lin;
+    dst->layer_out = stack_lout;
 }
 
 void type_nn_alt_train(AltNet *a, double **X, double **Y,
@@ -379,6 +406,13 @@ extern AltNet type_nn_opt_open(size_t, size_t);
 extern AltNet type_nn_bp_open(size_t, size_t);
 extern AltNet type_nn_mom_open(size_t, size_t);
 extern AltNet type_nn_adam_open(size_t, size_t);
+extern AltNet type_nn_bpgemm_open(size_t, size_t);
+extern AltNet type_nn_dyn_open(size_t, size_t);
+extern AltNet type_nn_dyn_sgd_open(size_t, size_t);
+extern AltNet type_nn_dyn_k_open(size_t, size_t);
+extern AltNet type_nn_dyn_w_open(size_t, size_t);
+extern AltNet type_nn_dyn_l_open(size_t, size_t);
+extern AltNet type_nn_dyn_adam_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_arena_open,
@@ -393,11 +427,19 @@ static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_bp_open,
     type_nn_mom_open,
     type_nn_adam_open,
+    type_nn_bpgemm_open,
+    type_nn_dyn_open,
+    type_nn_dyn_sgd_open,
+    type_nn_dyn_k_open,
+    type_nn_dyn_w_open,
+    type_nn_dyn_l_open,
+    type_nn_dyn_adam_open,
 };
 static const char *const NAMES[] = {
     "type-nn-arena", "type-nn-soa", "type-nn-gemm", "type-nn-csr",
     "type-nn-hotcold", "type-nn-q8", "type-nn-tape", "type-nn-opt-q8",
     "type-nn-opt", "type-nn-bp", "type-nn-mom", "type-nn-adam",
+    "type-nn-bpgemm", "type-nn-dyn", "type-nn-dyn-sgd", "type-nn-dyn-k", "type-nn-dyn-w", "type-nn-dyn-l", "type-nn-dyn-adam",
 };
 
 size_t type_nn_alt_count(void)

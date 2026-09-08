@@ -16,7 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c"
+ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c type_nn_bpgemm.c type_nn_dyn.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
@@ -59,6 +59,7 @@ order = ("xor", "quadratic", "mlp32x16x8", "iris", "wine", "wdbc", "diabetes")
 for task in order:
     block = by.get(task, [])
     block.sort(key=lambda r: (
+        r.get("mse", 1e300),
         r.get("params", 1 << 30),
         r.get("nbytes", 1 << 30),
         r.get("us_per_infer", 1e300),
@@ -86,6 +87,8 @@ print("  • type-nn-opt     = double W + adaptive SoA/GEMV, one-pass backward."
 print("  • type-nn-bp      = prefix/suffix dOr, fused dx, still SGD.")
 print("  • type-nn-mom     = SGD + momentum (μ=0.9) on And/Or weights.")
 print("  • type-nn-adam    = Adam (β1=0.9, β2=0.999) on And/Or weights.")
-print("  • Rows sorted by (params, nbytes, us/infer, train_s), all ascending.")
+print("  • type-nn-bpgemm  = Wᵀ dOr + dOr xᵀ blocked backward.")
+print("  • Rows sorted by (mse, params, nbytes, us/infer, train_s), all ascending.")
+print("  • type-nn-dyn     = residual-driven grow k / insert / widen hidden.")
 print("  • All type-nn-* variants have And/Or layers, grow/shrink, insert/remove.")
 PY

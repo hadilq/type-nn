@@ -6,7 +6,7 @@ LDFLAGS ?= -lm
 
 ALTS = type_nn_stack.c \
        type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c \
-       type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c
+       type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c type_nn_bpgemm.c type_nn_dyn.c
 
 all: type-nn test_type_nn
 

@@ -40,6 +40,10 @@ struct AltNet {
     size_t (*param_count)(void *ctx);
     size_t (*nbytes)(void *ctx);
     void   (*free)(void *ctx);
+    /* optional: scale layer idx and stitch neighbours (NULL if unsupported) */
+    void   (*scale_layer)(void *ctx, size_t idx, size_t in, size_t out);
+    size_t (*layer_in)(void *ctx, size_t idx);
+    size_t (*layer_out)(void *ctx, size_t idx);
 };
 
 AltNet type_nn_arena_open(size_t in, size_t out);
@@ -54,6 +58,13 @@ AltNet type_nn_opt_open(size_t in, size_t out);
 AltNet type_nn_bp_open(size_t in, size_t out);
 AltNet type_nn_mom_open(size_t in, size_t out);
 AltNet type_nn_adam_open(size_t in, size_t out);
+AltNet type_nn_bpgemm_open(size_t in, size_t out);
+AltNet type_nn_dyn_open(size_t in, size_t out);
+AltNet type_nn_dyn_sgd_open(size_t in, size_t out);
+AltNet type_nn_dyn_adam_open(size_t in, size_t out);
+AltNet type_nn_dyn_l_open(size_t in, size_t out);
+AltNet type_nn_dyn_w_open(size_t in, size_t out);
+AltNet type_nn_dyn_k_open(size_t in, size_t out);
 
 void   type_nn_alt_train(AltNet *a, double **X, double **Y,
                          size_t n, size_t epochs, double lr);

@@ -177,9 +177,39 @@ static void arena_sk(void *p, size_t k)
 {
     ArenaLayer *s = (ArenaLayer *)p;
     if (k < 1) k = 1;
+    if (k == s->k) return;
+    size_t n_or = s->out * s->k;
+    double *snap = (double *)calloc(n_or * s->in + n_or, sizeof(double));
+    double *bs = snap + n_or * s->in;
+    int r = 0;
+    for (int a = 0; a != NIL; a = s->A[a].right)
+        for (int o = s->A[a].o_head; o != NIL; o = s->O[o].right, r++) {
+            bs[r] = s->O[o].bias;
+            for (int w = s->O[o].w_head; w != NIL; w = s->W[w].right)
+                if (s->W[w].idx < s->in)
+                    snap[r * s->in + s->W[w].idx] = s->W[w].value;
+        }
+    size_t k0 = s->k, in = s->in, out = s->out;
     s->k = k;
     arena_build(s);
-    arena_init(s);
+    int ai = 0;
+    for (int a = 0; a != NIL; a = s->A[a].right, ai++) {
+        int oi = 0;
+        for (int o = s->A[a].o_head; o != NIL; o = s->O[o].right, oi++) {
+            if ((size_t)oi < k0) {
+                size_t rr = (size_t)ai * k0 + (size_t)oi;
+                s->O[o].bias = bs[rr];
+                for (int w = s->O[o].w_head; w != NIL; w = s->W[w].right)
+                    s->W[w].value = snap[rr * in + s->W[w].idx];
+            } else {
+                s->O[o].bias = 1.0; /* product-preserving new Or */
+                for (int w = s->O[o].w_head; w != NIL; w = s->W[w].right)
+                    s->W[w].value = 0.0;
+            }
+        }
+    }
+    (void)out;
+    free(snap);
 }
 static void arena_id(void *p)
 {
