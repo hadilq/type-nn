@@ -45,6 +45,8 @@ struct AltNet {
     size_t (*layer_in)(void *ctx, size_t idx);
     size_t (*layer_out)(void *ctx, size_t idx);
     size_t (*layer_k)(void *ctx, size_t idx);
+    size_t (*n_add)(void *ctx);
+    size_t (*n_drop)(void *ctx);
 };
 
 #define TNN_SNAP_MAX 8
@@ -85,6 +87,20 @@ AltNet type_nn_bpcurv_open(size_t in, size_t out);
 AltNet type_nn_bpcombo_open(size_t in, size_t out);
 AltNet type_nn_bpcube_open(size_t in, size_t out);
 AltNet type_nn_bpwide_open(size_t in, size_t out);
+AltNet type_nn_bpsite_open(size_t in, size_t out);
+AltNet type_nn_bpearly_open(size_t in, size_t out);
+AltNet type_nn_bpdeep_open(size_t in, size_t out);
+AltNet type_nn_idi_open(size_t in, size_t out);
+AltNet type_nn_idfact_open(size_t in, size_t out);
+AltNet type_nn_idn_open(size_t in, size_t out);
+AltNet type_nn_idtgt_open(size_t in, size_t out);
+AltNet type_nn_idema_open(size_t in, size_t out);
+AltNet type_nn_idmax_open(size_t in, size_t out);
+AltNet type_nn_typefact_open(size_t in, size_t out);
+AltNet type_nn_adapt_open(size_t in, size_t out);
+AltNet type_nn_init2_open(size_t in, size_t out);
+AltNet type_nn_init2p_open(size_t in, size_t out);
+AltNet type_nn_one_open(size_t in, size_t out);
 AltNet type_nn_lin_open(size_t in, size_t out);
 AltNet type_nn_dyn_l_open(size_t in, size_t out);
 AltNet type_nn_dyn_w_open(size_t in, size_t out);

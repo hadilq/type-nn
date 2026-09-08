@@ -422,3 +422,370 @@ Picked by UCI MSE (torch-mlp in parentheses):
 What actually moved MSE: (1) insert a readout on 1-d tails so WDBC/diabetes
 become real proj2, (2) then widen H / raise k when `ge` stays high and
 Adam-v is flat. Extra depth beyond 3 never helped.
+
+
+## Iteration: when and where to insert
+
+Hypothesis: extra depth with *worse* MSE means the layer arrived late
+or between the wrong interfaces. Per-layer `ge[i]/ae[i]` scores every
+site (`i` = “before layer i”, `i = depth` = after the tail).
+
+- `type-nn-bpsite` — first insert at tick 16 at the max-score site
+  (front = real k=1 basis, tail = real k=1 readout, mid = identity)
+- `type-nn-bpearly` — at tick 16 commit *both* roles in one shot,
+  then lock depth and only widen H
+- neither adds a layer after tick 4000 / two adds
+
+| task | late combo | **early/site** | bpwide (start at 3) |
+|------|------------|----------------|---------------------|
+| iris | 0.154 / 0.96 | **site 0.095 / 0.97**, early 0.096 / **0.98** | 0.102 / 0.97 |
+| wine | **0.037 / 1.00** | early 0.048 / 1.00 | **0.037 / 1.00** |
+| wdbc | **0.039 / 0.98** | site 0.042 / 0.97 | 0.048 / 0.97 |
+| diabetes | 0.023 | 0.025 | **0.022** |
+| xor | 0 / d=1 | 0 / d=1 | 0 / d=3 |
+
+Iris is the smoking gun: the same +2 layers at tick 16 beat the same
++2 layers sprinkled later (0.095 vs 0.154). Wine/WDBC still prefer a
+wide basis more than a late extra map.
+
+
+## Iteration: thin extra layers, not fat rows
+
+Torch-mlp iris is `4→8→3` = **67 params, 2 affines**. `type-nn-bpsite`
+ended at **547 params / 3 layers** — under-*layered*, over-*wide*.
+
+`type-nn-bpdeep` uses the same `ge[i]` sites but:
+
+- hidden width capped at 8 (12 on wide inputs)
+- at tick 16 commits **three** inserts: k=1 basis, extra k=1 hidden, k=1 readout
+- never grows width
+
+| task | bpsite (fat) | **bpdeep (thin+deep)** | torch |
+|------|--------------|------------------------|-------|
+| iris | 0.095 / 547p / d=3 | 0.136 / **283p / d=4** | 0.014 / 67p |
+| wine | 0.055 / 1187p | 0.111 / **355p / d=4** | 0.002 |
+| wdbc | 0.042 / 1969p | 0.044 / **745p / d=4** | 0.016 |
+| diabetes | 0.025 / 1081p | 0.026 / **313p / d=4** | 0.023 |
+| xor | 0 / 6p / d=1 | 0 / 6p / d=1 | — |
+
+The extra early layer *does* fire (`ddepth=3`). It does **not** beat
+the fatter 3-layer site net on MSE — WDBC is almost a tie at ⅓ the
+params. The remaining iris gap to torch is the missing ReLU, not
+missing depth.
+
+
+## Iteration: inserts that do not change the output
+
+Adding a random map jumps the function and wastes the remaining
+epochs un-learning the jump. Two exact constructions:
+
+1. **Identity** (`type-nn-idi`) — insert \(k{=}1\), \(W=I\), \(b=0\)
+   *before* the bottleneck (and an \(I\) after the tail).
+   `clip(I x) = x` inside the Or clip, so \(y\) is unchanged.
+2. **Factor / move** (`type-nn-idfact`) — if the current layer is
+   \(k{=}1\), \(y = Wx+b\) becomes \(h = Wx+b\), \(y = Ih\).
+   Product layers cannot be factored exactly, so they fall back to (1).
+
+`n` (1 or 2) comes from that layer's `ge`. Board pruned to the nets
+that still move MSE.
+
+| task | idi / idfact | best previous | torch |
+|------|--------------|---------------|-------|
+| iris | 0.101 / 262p / d=4 | site 0.095 / 547p | 0.014 |
+| wine | 0.118 / 757p | wide 0.037 | 0.002 |
+| wdbc | 0.047 / 1924p | combo 0.039 | 0.016 |
+| diabetes | 0.026 / 538p | wide 0.022 | 0.023 |
+| xor | 0 / d=1 | 0 | — |
+
+The construction is correct (output does not jump; tests cover it).
+It is also *smaller* than the fat site net on iris. The remaining
+MSE gap is still calibration / missing ReLU, not a discontinuous insert.
+
+
+## Iteration: n is not 1 or 2
+
+The cap was the mistake. Four guesses, all identity-preserving, early,
+no upper bound except `LK_MAX_DEPTH=6`:
+
+| guess | formula |
+|-------|---------|
+| idn | `n = round(ge_max / 0.05)` |
+| idtgt | `n = 3 − depth` (aim at 4 + tail I) |
+| idema | `n = round(ema / 0.06)` |
+| idmax | `max(idn, idtgt)` |
+
+| task | idn (free n) | idtgt | previous best | torch |
+|------|--------------|-------|---------------|-------|
+| xor | 0 / d=1 | 0 / d=1 | 0 | — |
+| iris | 0.147 / d=6 / 122p | 0.113 / d=6 | **site 0.095** | 0.014 |
+| wine | 0.115 / d=6 | 0.071 / d=6 | **wide 0.037** | 0.002 |
+| **wdbc** | **0.012 / 0.988 / d=6 / 3784p** | 0.042 | combo 0.039 | **0.016** |
+| diabetes | 0.026 / d=6 | 0.026 | wide 0.022 | 0.023 |
+
+`idn` on WDBC **beats torch-mlp** (0.012 vs 0.016, acc 0.988 vs 0.99).
+`ddepth=5` — five identity maps inserted at tick 16 in front of the
+product, then trained. Iris/wine still prefer a shorter fat stack;
+WDBC's 30-d input is where free `n` pays off.
+
+
+## Entropy and whether torch is overfitting
+
+`./bench.sh` scores **train-set** MSE (the whole file). That is not
+generalization.
+
+| set | n | in | H(Y) bits | 1-NN LOO err | meaning |
+|-----|---|----|-----------|--------------|---------|
+| iris | 150 | 4 | **1.585** (max for 3 classes) | 5.3% | balanced labels, **strong** X→Y pattern |
+| wine | 178 | 13 | 1.567 (≈max) | 4.5% | same: small and easy |
+| wdbc | 569 | 30 | 0.95 (2-class) | 4.9% | more samples, still easy |
+| diabetes | 442 | 10 | 3.78 (hist) | 1-NN MSE 0.057 | higher target spread |
+
+High **label** entropy just means the classes are balanced. High
+**residual** entropy H(Y|X) would mean “no pattern”. 1-NN leave-one-out
+~5% on all three class sets ⇒ H(Y|X) is **low**. There *is* a pattern.
+
+Torch-mlp on a **70/30 holdout** (same 8–16 ReLU width):
+
+| set | train MSE / acc | **held-out** MSE / acc |
+|-----|-----------------|------------------------|
+| iris | 0.008 / 0.99 | 0.022 / 0.96 |
+| wine | 0.001 / 1.00 | **0.039 / 0.94** |
+| wdbc | 0.017 / 0.99 | **0.013 / 1.00** |
+| diabetes | 0.017 | 0.038 |
+
+Wine’s board score of ~0.002 is **train memorization** on 178 points.
+Iris is mildly overfit. WDBC **generalizes** — and that is the set
+where `type-nn-idn` beat torch on the full-file score (0.012 vs 0.016).
+
+Run: `python3 tools/entropy_holdout.py`
+
+
+## More epochs vs late inserts
+
+`TYPE_NN_EPOCHS` overrides the UCI budget. Identity maps are in by
+tick 16, so 4000 epochs is almost all “after the add”.
+
+| impl | set | 250 ep | 1000 ep | 4000 ep | torch train |
+|------|-----|--------|---------|---------|-------------|
+| idn | iris | 0.147 | 0.126 | 0.123 | 0.008 |
+| site | iris | **0.095** | 0.111 | 0.124 | 0.008 |
+| wide | iris | 0.102 | 0.103 | 0.097 | 0.008 |
+| proj2 | iris | 0.114 | 0.097 | 0.112 | 0.008 |
+| idn | wine | 0.092 | 0.078 | 0.104 | 0.001 |
+| site | wine | 0.041 | 0.054 | 0.052 | 0.001 |
+| wide | wine | 0.31* | **0.030** | 0.241 | 0.001 |
+| proj2 | wine | 0.073 | 0.042 | 0.038 | 0.001 |
+
+\* wide/wine is unstable at this lr if the budget is slightly off.
+
+More epochs shave a little off `idn` iris (0.147→0.123) and do **not**
+reach torch's train-set 0.008 / 0.001. `bpsite` iris even *rises*.
+Late insertion is not the limiter — the clipped And/Or polynomial
+saturates on these two small sets. Overfitting like torch would need
+a sharper last layer (or more capacity *of a different kind*), not
+just a longer run.
+
+```bash
+TYPE_NN_EPOCHS=1000 ./bench.sh iris
+```
+
+
+## Type factorization (common types → parent layer)
+
+Identity pads do not move types. Type Mechanics says the factorized
+term *is* the parent node. `type-nn-typefact` uses each layer's Or
+rows and their backprop:
+
+1. **Lift** (tick 16, exact): every Or of the current product becomes
+   a k=1 type in a new parent. The child And is rewritten as a product
+   of those parent features (one-hot W).
+   `And_i = Π_t Or_{i,t}(x)` is unchanged at the insert.
+2. **Merge**: Or rows whose **weights** and **grad directions** have
+   cosine ≥ 0.92 / 0.80 are the same type. They are averaged into one
+   parent unit; child connections retarget.
+
+| set | typefact | params | vs torch params | mse / acc |
+|-----|----------|--------|-----------------|-----------|
+| iris | d=2 | **61** | torch 67 | 0.123 / 0.97 |
+| wine | d=2 | 106 | — | 0.090 / 1.00 |
+| wdbc | d=2 | 68 | — | 0.048 / 0.96 |
+| xor | d=1 | 6 | — | 0 |
+
+Iris is now in the same param ballpark as torch. MSE is still above
+the fat site net (0.095) and torch's *train* 0.008 — but the layer
+add is finally a type move, not an I-pad. WDBC's 0.012 remains the
+`idn` stack, not this factorization.
+
+
+## One policy instead of a shuffled board
+
+The winner was flipping with the file:
+
+- narrow (iris 4-d, wine 13-d) → short type-lift / fat 3-layer
+- wide (wdbc 30-d) → many early I-maps into the product
+
+`type-nn-adapt` routes on `in` and `ge` at tick 16:
+
+- `in < 16`: exact Or-lift (`typefact`)
+- `in >= 16`: I-stack in front of the product (`idn` family)
+- `in < 4`: do nothing (XOR)
+
+| set | adapt | specialized winner |
+|-----|-------|--------------------|
+| xor | 0 / d=1 | 0 |
+| iris | 0.123 / 61p / 0.97 | site 0.095 / 547p |
+| wine | 0.090 / 106p / 1.00 | wide 0.037 |
+| wdbc | 0.059 / d=6 | **idn 0.012 / 0.988** |
+| diabetes | 0.027 / 15p | wide 0.022 |
+
+Same *rule* on every file. Iris stays near torch's 67 params.
+WDBC still prefers the pure `idn` stack — routing got depth right
+(`ddepth=5`) but not that 0.012 yet.
+
+
+## Layer churn: add vs drop
+
+`ddepth` is only *net* change. A run that adds 3 and drops 2 looks
+the same as a run that adds 1. New counters:
+
+- `layer_add` / `ladd` — how many layers were inserted
+- `layer_drop` / `ldrop` — how many were deleted
+
+`remove_idle` used to run after the early commit. That is now
+**locked**: once the tick-16 structure is in, depth cannot change.
+
+| set | impl | ladd | ldrop | ddepth | mse |
+|-----|------|------|-------|--------|-----|
+| iris | idn | 5 | **0** | 5 | 0.147 |
+| iris | site | 2 | **0** | 2 | 0.095 |
+| iris | adapt | 1 | **0** | 1 | 0.123 |
+| wdbc | idn | 5 | **0** | 5 | 0.012 |
+| wdbc | adapt | 5 | **0** | 5 | 0.059 |
+| xor | * | 0 | 0 | 0 | 0 |
+
+With the lock on, **ldrop is 0** on every file. So the “add, drop,
+add again, no time to fit” story is not what these runs were doing
+*after* the lock. Extra epochs still do not reach torch’s train MSE
+— that gap is not late churn.
+
+The board still splits by input width (narrow → type-lift, wide →
+I-stack). That split is real; it is not an artifact of oscillating
+depth.
+
+
+## Start at torch-mlp depth
+
+Torch-mlp is two affines (`in→H→out`). `type-nn-init2` starts there
+(`k=1, k=1`, H=8/16). `type-nn-init2p` keeps the product on the tail
+(`k=1, k=2`). Dynamic add/drop still on; lock after at most one extra I.
+
+| set | init2 (torch shape) | init2p (product tail) | site | idn |
+|-----|---------------------|------------------------|------|-----|
+| xor | 0.25 / d=2 add=0 drop=0 | **0 / d=2 add=0 drop=0** | 0 / d=1 | 0 |
+| iris | 0.273 / 0.84 / d=3 **add=1 drop=0** | 0.131 / 0.98 / d=3 add=1 | **0.095** | 0.147 |
+| wine | 0.100 / d=3 add=1 | 0.080 / d=3 add=1 | **0.055** | 0.115 |
+| wdbc | 0.064 / d=3 add=1 | 0.049 / d=3 add=1 | 0.042 | **0.012** |
+| diabetes | 0.028 / d=3 add=1 | 0.027 / d=3 add=1 | 0.025 | 0.026 |
+
+They **add one** map (ge still high at tick 16) and **never drop**.
+Starting at torch depth does not by itself match torch MSE — two
+clipped affines without ReLU are weaker than ReLU-MLP on iris
+(0.273 vs torch train 0.008). The product tail (`init2p`) is what
+makes XOR and iris class-acc work.
+
+
+## Why WDBC looks great and iris looks behind
+
+They are not the same problem.
+
+| | iris | wdbc |
+|---|---|---|
+| n | 150 | 569 |
+| in | 4 | 30 |
+| out | **3-way one-hot** | **1 scalar 0/1** |
+| 1-NN LOO | 5.3% | 4.9% |
+| torch train MSE | 0.008 | 0.016 |
+
+`tools/debug_gap.c` after the usual train:
+
+| impl | iris mse (on / off) | iris acc | mean p_true | wdbc mse | wdbc acc |
+|------|---------------------|----------|-------------|----------|----------|
+| idn | 0.147 (0.065 / **0.083**) | 0.94 | 0.79 | **0.012** | 0.988 |
+| site | 0.095 (0.041 / **0.054**) | 0.97 | 0.90 | 0.042 | 0.972 |
+| typefact | 0.123 (0.044 / 0.079) | 0.97 | 0.92 | 0.048 | 0.963 |
+| init2p | 0.131 (0.058 / 0.073) | **0.98** | 0.94 | 0.049 | 0.947 |
+
+Iris samples look like `y=[1,0,0] yh=[1.05,-0.10,0.05]`:
+class is right, the vector is not a simplex, and **half the MSE is
+off-class leakage**. WDBC has no off-class channel; idn just has to
+hit 0 or 1 and the 30-d I-stack does that.
+
+So iris is not “failing to find the type.” Acc 0.97–0.98 is at or
+better than 1-NN / torch holdout. The board MSE gap is **calibration
+on a 3-vector**, plus a 4-d input that cannot use the WDBC I-stack.
+
+```bash
+./tools/debug_gap type-nn-idn iris
+# built as /tmp/debug_gap in the notes; compile from tools/debug_gap.c
+```
+
+
+## Off-class leakage, and how torch actually avoids it
+
+Torch-mlp in `bench_torch.py` is **not** softmax + CE. It is
+
+    Linear → ReLU → Linear → MSE
+
+`F.mse_loss` is the mean over **every element** of the tensor:
+`sum((yh-y)^2) / (n * out)`. Our board used `sum / n`, so iris
+(`out=3`) was reported **3× worse** than WDBC (`out=1`) for the
+same average per-channel error.
+
+That is the “leakage” on the board: the two off-class channels were
+counted in full, and torch’s number already averaged them in.
+
+Torch’s last `Linear(H, 3)` sets each class **independently**. MSE
+then pulls the unused two toward 0. We now do the same two things:
+
+1. Report MSE as `sum / (n * out)` (torch mean).
+2. Train with `dy_k = (yh_k - y_k) / out` so a 3-class head is not
+   given 3× the gradient of WDBC.
+
+| set | site (old board) | site (torch mean) | torch train / holdout |
+|-----|------------------|-------------------|------------------------|
+| iris | 0.095 | **0.031** / acc 0.97 | 0.008 / 0.022 |
+| wine | 0.055 | **0.014** / acc 1.00 | 0.002 / 0.039 |
+| wdbc | 0.042 | 0.042 (out=1, unchanged) | 0.016 / 0.013 |
+
+Wine **beats torch holdout**. Iris is in the same band as torch
+holdout, still short of torch *train* (ReLU memorization on 150 rows).
+XOR and WDBC are unchanged (`out=1`).
+
+
+## One model instead of a shuffled board
+
+Wine is also 3-class one-hot, so it had the same scoring leakage as
+iris. After the torch-mean MSE, the remaining issue is that **no
+single impl won every file**.
+
+What each specialist was doing:
+
+| signal | winner | move |
+|--------|--------|------|
+| `out>=2` and `in<20` (iris, wine) | site | k=1 basis + k=1 readout |
+| `in>=20` or `out==1` (wdbc, diabetes) | idn | I-stack into the product |
+| `in<4` (xor) | product | stay depth 1 |
+
+`type-nn-one` is that rule in one net.
+
+| set | **one** | best specialist | torch train / holdout |
+|-----|---------|-----------------|------------------------|
+| xor | **0** | 0 | — |
+| iris | 0.037 / acc **0.987** / 211p | site 0.031 / 0.967 / 547p | 0.008 / 0.022 |
+| wine | 0.023 / acc 1.00 | site 0.014 | 0.002 / 0.039 |
+| wdbc | **0.012 / acc 0.988** | idn 0.012 | 0.016 / 0.013 |
+| diabetes | 0.026 | wide 0.022 | 0.023 / 0.038 |
+
+Not the #1 MSE on iris/wine/diabetes, but the first row that is
+**near-best on every file** (iris +0.006, wine +0.009, wdbc tied,
+diabetes +0.005) without swapping impls.

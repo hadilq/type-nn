@@ -2,7 +2,17 @@
 #include "type_nn_layerkit.h"
 
 /*
- * type-nn-bpest
+ * type-nn-idi / type-nn-idfact
+ *
+ * Lesson: extra depth with *higher* MSE means the new layer was
+ * either inserted too late (random init, few remaining steps) or
+ * between the wrong interfaces.
+ *
+ * Per-layer BP gives both answers:
+ *   ge[i], ae[i] score every interface
+ *   site i = "before layer i" (i = depth → after the tail)
+ *   insert is k=1 identity, so the mapping does not jump
+ *   first decision at tick 16, at most two depth adds
  *
  * Use backprop *layer energy* to estimate how many layers to add/remove.
  *
@@ -28,19 +38,7 @@
 #define AD_EPS 1e-8
 #define SETTLE 40
 #define FREEZE 20
-#define MAX_HID 32
-#define MODE_GAP   1
-#define MODE_CURV  2
-#define MODE_READ1 4  /* readout even when out==1 */
-#define MODE_K     8  /* grow mid/tail k from gap */
-#define MODE_W     16 /* grow hidden width from ge */
-#define MODE_COMBO (MODE_GAP|MODE_CURV|MODE_READ1|MODE_K|MODE_W)
-#define MODE_CUBE  (MODE_COMBO)
-#define MODE_WIDE  (MODE_COMBO)
-#define MODE_EARLY 32  /* commit full shape once, then lock depth */
-#define MODE_POS   64  /* insert at argmax ge[i] interface */
-#define COMMIT     48
-
+#define MAX_HID 24
 
 typedef struct {
     LKLayer L;
@@ -54,26 +52,14 @@ typedef struct {
     double *act[LK_MAX_DEPTH + 1];
     size_t  act_w[LK_MAX_DEPTH + 1];
     size_t  depth;
-    int     dynamic, mode, locked;
-    unsigned n_add, n_drop;
+    int     dynamic, added_layers, early_done, force_roles, fact, guess;
+    unsigned n_add, n_drop; int locked;
     unsigned tick, last_change;
     double  ema;
     unsigned long tstep;
     double  b1p, b2p;
-    double  gap;      /* product gap of current tail */
-    double  flat;     /* mean Adam-v (curvature / noise) */
     const char *name;
 } PNet;
-
-static size_t pick_hid(size_t in, size_t out)
-{
-    size_t h = 8;
-    if (in >= 10) h = 16;
-    if (in >= 24) h = 24;
-    if (h < out + 2) h = out + 2;
-    if (h > MAX_HID) h = MAX_HID;
-    return h;
-}
 
 static void psync(PLayer *P)
 {
@@ -186,77 +172,9 @@ static void upd(PNet *N, PLayer *P, const double *x, const double *dy,
 
 /* ── architecture moves driven by ge[] / ae[] ── */
 
-static int has_k1_front(const PNet *N)
-{
-    return N->depth >= 2 && N->layer[0].L.k == 1;
-}
-static int has_k1_readout(const PNet *N)
-{
-    return N->depth >= 2 && N->layer[N->depth - 1].L.k == 1;
-}
 
-static void insert_proj(PNet *N)
-{
-    if (N->depth >= LK_MAX_DEPTH) return;
-    PLayer *tail = &N->layer[0];
-    size_t in = tail->L.in, out = tail->L.out;
-    size_t H = pick_hid(in, out);
-    memmove(&N->layer[1], tail, N->depth * sizeof(PLayer));
-    memset(&N->layer[0], 0, sizeof(PLayer));
-    palloc(&N->layer[0], in, H, 1);
-    lk_resize_in(&N->layer[1].L, H);
-    psync(&N->layer[1]);
-    N->layer[1].freeze_col = FREEZE;
-    N->depth++;
-    N->n_add++;
-    N->last_change = N->tick;
-}
-
-static void insert_readout(PNet *N)
-{
-    if (N->depth >= LK_MAX_DEPTH) return;
-    PLayer *tail = &N->layer[N->depth - 1];
-    size_t o = tail->L.out;
-    /* mid keeps current out as feature width; readout maps H → o with k=1.
-       If tail already writes class dim, first widen it to a feature block. */
-    size_t feat = pick_hid(tail->L.in, o);
-    if (feat < o) feat = o;
-    lk_resize_out(&tail->L, feat);
-    psync(tail);
-    palloc(&N->layer[N->depth], feat, o, 1);
-    N->layer[N->depth].freeze_col = FREEZE;
-    N->depth++;
-    N->n_add++;
-    N->last_change = N->tick;
-}
-
-
-static void insert_k1_before(PNet *N, size_t idx)
-{
-    if (N->depth >= LK_MAX_DEPTH || idx >= N->depth) return;
-    PLayer *tgt = &N->layer[idx];
-    size_t din = tgt->L.in;
-    size_t H = pick_hid(din, tgt->L.out);
-    memmove(&N->layer[idx + 1], tgt, (N->depth - idx) * sizeof(PLayer));
-    memset(&N->layer[idx], 0, sizeof(PLayer));
-    palloc(&N->layer[idx], din, H, 1);
-    lk_resize_in(&N->layer[idx + 1].L, H);
-    psync(&N->layer[idx + 1]);
-    N->layer[idx + 1].freeze_col = FREEZE;
-    N->depth++;
-    N->last_change = N->tick;
-}
-
-static size_t bottleneck(const PNet *N)
-{
-    size_t idx = 0;
-    double best = -1.0;
-    for (size_t i = 0; i < N->depth; i++) {
-        double r = N->layer[i].ge / (N->layer[i].ae + 0.05);
-        if (r > best) { best = r; idx = i; }
-    }
-    return idx;
-}
+/* Identity-preserving insert BEFORE layer `idx` (idx==depth → after tail).
+   New map is k=1, W=I, so the forward values do not jump. */
 
 static int layer_idle(const PLayer *P)
 {
@@ -280,6 +198,7 @@ static int layer_idle(const PLayer *P)
 
 static void remove_idle(PNet *N)
 {
+    if (N->locked) return;
     if (N->depth < 2) return;
     for (size_t i = 0; i + 1 < N->depth; i++) {
         if (N->layer[i].freeze_col > 0) continue;
@@ -297,108 +216,240 @@ static void remove_idle(PNet *N)
     }
 }
 
-static void grow_width(PNet *N)
+
+/* Exact identity on the input of layer idx: h = x, then layer idx sees h.
+   clip(I x) = x inside OR clip, so the net output does not jump. */
+static void insert_ident_before(PNet *N, size_t idx)
 {
-    if (N->depth < 2) return;
-    PLayer *H = &N->layer[0];
-    if (H->L.out >= MAX_HID) return;
-    size_t nout = H->L.out + 2;
-    if (nout > MAX_HID) nout = MAX_HID;
-    lk_resize_out(&H->L, nout);
-    psync(H);
-    lk_resize_in(&N->layer[1].L, nout);
-    psync(&N->layer[1]);
-    N->layer[1].freeze_col = FREEZE;
+    if (N->depth >= LK_MAX_DEPTH || idx >= N->depth) return;
+    size_t dim = N->layer[idx].L.in;
+    memmove(&N->layer[idx + 1], &N->layer[idx],
+            (N->depth - idx) * sizeof(PLayer));
+    memset(&N->layer[idx], 0, sizeof(PLayer));
+    palloc(&N->layer[idx], dim, dim, 1);
+    lk_identity(&N->layer[idx].L);
+    psync(&N->layer[idx]);
+    N->layer[idx].freeze_col = FREEZE;
+    N->depth++;
+    N->added_layers++; N->n_add++;
     N->last_change = N->tick;
 }
 
-static void grow_mid_k(PNet *N)
+/* Move a k=1 layer's affine into a new map in front of it, leave I behind:
+     y = W x + b   →   h = W x + b,  y = I h
+   Exact (pre-clip). Product layers cannot be factored this way; fall back to I. */
+static void insert_factor_before(PNet *N, size_t idx)
 {
-    /* prefer the product layer */
-    size_t idx = N->depth >= 2 ? N->depth - 2 : N->depth - 1;
-    if (N->layer[N->depth - 1].L.k >= 2) idx = N->depth - 1;
-    if (N->depth >= 3) idx = 1;
-    LKLayer *L = &N->layer[idx].L;
-    if (L->k >= 3) return;
-    lk_set_k(L, L->k + 1);
-    psync(&N->layer[idx]);
+    if (N->depth >= LK_MAX_DEPTH || idx >= N->depth) return;
+    if (N->layer[idx].L.k != 1) {
+        insert_ident_before(N, idx);
+        return;
+    }
+    size_t out = N->layer[idx].L.out;
+    memmove(&N->layer[idx + 1], &N->layer[idx],
+            (N->depth - idx) * sizeof(PLayer));
+    /* idx keeps W,b; idx+1 is a duplicate we replace with I */
+    memset(&N->layer[idx + 1], 0, sizeof(PLayer));
+    palloc(&N->layer[idx + 1], out, out, 1);
+    lk_identity(&N->layer[idx + 1].L);
+    psync(&N->layer[idx + 1]);
+    N->layer[idx + 1].freeze_col = FREEZE;
+    N->depth++;
+    N->added_layers++; N->n_add++;
+    N->last_change = N->tick;
+}
+
+static void insert_at(PNet *N, size_t idx)
+{
+    if (idx >= N->depth) {
+        /* after tail: I on the output, y' = I y */
+        if (N->depth >= LK_MAX_DEPTH) return;
+        PLayer *T = &N->layer[N->depth - 1];
+        size_t o = T->L.out;
+        palloc(&N->layer[N->depth], o, o, 1);
+        lk_identity(&N->layer[N->depth].L);
+        psync(&N->layer[N->depth]);
+        N->layer[N->depth].freeze_col = FREEZE;
+        N->depth++;
+        N->added_layers++; N->n_add++;
+        N->last_change = N->tick;
+        return;
+    }
+    if (N->fact) insert_factor_before(N, idx);
+    else insert_ident_before(N, idx);
+}
+
+/* Score every interface. High score = insert an affine identity there.
+   site i means "before layer i"; site `depth` means "after the tail". */
+static size_t pick_site(const PNet *N, double *score_out)
+{
+    size_t best = N->depth; /* default: after tail */
+    double best_s = -1.0;
+    for (size_t i = 0; i <= N->depth; i++) {
+        double s = 0.0;
+        if (i == 0) {
+            /* raw input → first layer. Product on wide x needs a basis. */
+            if (N->layer[0].L.in >= 4 && N->layer[0].L.k >= 2)
+                s = N->layer[0].ge * 2.0 + 0.3;
+        } else if (i == N->depth) {
+            /* after tail. Product writing targets needs a linear mix. */
+            const PLayer *T = &N->layer[N->depth - 1];
+            if (T->L.k >= 2)
+                s = T->ge * 1.5 + 0.2;
+        } else {
+            /* between i-1 and i: bottleneck if upstream error is large
+               and downstream activity is small (layer i is not using it). */
+            const PLayer *U = &N->layer[i - 1];
+            const PLayer *D = &N->layer[i];
+            double ratio = U->ge / (D->ae + 0.05);
+            s = 0.5 * (U->ge + D->ge) * ratio;
+        }
+        if (s > best_s) { best_s = s; best = i; }
+    }
+    if (score_out) *score_out = best_s;
+    return best;
+}
+
+
+
+static size_t pick_hid(size_t in, size_t out)
+{
+    size_t h = 8;
+    if (in >= 10) h = 16;
+    if (in >= 24) h = 24;
+    if (h < out + 2) h = out + 2;
+    if (h > 24) h = 24;
+    return h;
+}
+
+/* Real k=1 basis (not I) — this is the iris/wine site move. */
+static void insert_proj_real(PNet *N)
+{
+    if (N->depth >= LK_MAX_DEPTH) return;
+    size_t in = N->layer[0].L.in;
+    size_t H = pick_hid(in, N->layer[N->depth - 1].L.out);
+    memmove(&N->layer[1], &N->layer[0], N->depth * sizeof(PLayer));
+    memset(&N->layer[0], 0, sizeof(PLayer));
+    palloc(&N->layer[0], in, H, 1);
+    lk_resize_in(&N->layer[1].L, H);
+    psync(&N->layer[1]);
+    N->layer[1].freeze_col = FREEZE;
+    N->depth++;
+    N->added_layers++; N->n_add++;
+    N->last_change = N->tick;
+}
+
+static void insert_readout_real(PNet *N)
+{
+    if (N->depth >= LK_MAX_DEPTH) return;
+    PLayer *tail = &N->layer[N->depth - 1];
+    if (tail->L.k < 2) return;
+    size_t o = tail->L.out;
+    size_t feat = pick_hid(tail->L.in, o);
+    if (feat < o) feat = o;
+    lk_resize_out(&tail->L, feat);
+    psync(tail);
+    palloc(&N->layer[N->depth], feat, o, 1);
+    N->layer[N->depth].freeze_col = FREEZE;
+    N->depth++;
+    N->added_layers++; N->n_add++;
     N->last_change = N->tick;
 }
 
 static void estimate_and_apply(PNet *N)
 {
     if (!N->dynamic) return;
-
-    int n_add_proj = 0, n_add_readout = 0, n_remove = 0;
-    size_t in0 = N->layer[0].L.in;
-    size_t outT = N->layer[N->depth - 1].L.out;
-    int gap_low = (N->mode & MODE_GAP) ? (N->gap < 0.15) : 0;
-    int curv_flat = (N->mode & MODE_CURV) ? (N->flat < 1e-4 && N->ema > 0.08) : 0;
-
-    if (in0 >= 4 && !has_k1_front(N) && N->layer[0].ge > 0.05)
-        n_add_proj = 1;
-    if (!has_k1_readout(N) && N->layer[N->depth - 1].L.k >= 2) {
-        int multi = outT >= 2 && N->layer[N->depth - 1].ge > 0.04;
-        int unit  = (N->mode & MODE_READ1) && has_k1_front(N) && outT == 1
-                    && N->layer[N->depth - 1].ge > 0.03;
-        if (multi || unit) n_add_readout = 1;
-    }
-    for (size_t i = 0; i + 1 < N->depth; i++)
-        if (layer_idle(&N->layer[i])) n_remove++;
-
-    /* Early commit: one shot at COMMIT, then lock depth so the new
-       maps get the rest of training instead of appearing near the end. */
-    if ((N->mode & MODE_EARLY) && !N->locked) {
-        if (N->tick < COMMIT) return;
-        if (n_add_proj && N->depth < 3) insert_proj(N);
-        if (n_add_readout && N->depth < 4) insert_readout(N);
-        N->locked = 1;
-        N->last_change = N->tick;
-        return;
-    }
-    if ((N->mode & MODE_EARLY) && N->locked) {
-        if (N->tick < N->last_change + SETTLE) return;
-        if ((N->mode & MODE_W) && N->ema > 0.05) grow_width(N);
-        /* never drop after lock — late drop/add was wasting the extra epochs */
-        return;
-    }
-
-    if (N->tick < N->last_change + SETTLE) return;
+    /* Diagnose early: after 16 steps we already have a ge/ae EMA. */
+    int early = !N->early_done && N->tick >= 16;
+    int later = N->early_done && N->tick >= N->last_change + SETTLE;
+    if (!early && !later) return;
     if (N->ema < 0.03) {
         remove_idle(N);
         return;
     }
-
-    /* Position: insert at the highest ge/ae interface, not always at tail. */
-    if ((N->mode & MODE_POS) && N->depth < 4 && in0 >= 4) {
-        size_t b = bottleneck(N);
-        if (b == 0 && N->layer[0].L.k >= 2 && !has_k1_front(N)) {
-            insert_k1_before(N, 0);
-            return;
-        }
-        if (b + 1 == N->depth && N->layer[b].L.k >= 2 && !has_k1_readout(N)) {
-            insert_readout(N);
-            return;
-        }
-        if (b > 0 && N->layer[b].L.k >= 2 && N->depth < 4) {
-            insert_k1_before(N, b);
-            return;
-        }
-    }
-
-    if (n_add_proj && N->depth < 3) { insert_proj(N); return; }
-    if (n_add_readout && N->depth < 4) { insert_readout(N); return; }
-
-    if ((N->mode & MODE_K) && gap_low && N->ema > 0.06 && N->depth >= 2) {
-        grow_mid_k(N);
+    /* Refuse late depth growth: after two adds, or after many steps,
+       extra layers never catch up. */
+    if (N->layer[0].L.in < 4) return;
+    if (N->tick > 8000) {
+        remove_idle(N);
+        N->early_done = 1; N->locked = 1;
         return;
     }
-    if ((N->mode & MODE_W) && N->depth >= 2 &&
-        (N->layer[0].ge > 0.06 || curv_flat) && N->ema > 0.05) {
-        grow_width(N);
+
+    if (early && N->layer[0].L.in >= 4) {
+        size_t b = 0;
+        double gmax = N->layer[0].ge;
+        for (size_t i = 1; i < N->depth; i++)
+            if (N->layer[i].ge > gmax) { gmax = N->layer[i].ge; b = i; }
+        int room = (int)LK_MAX_DEPTH - (int)N->depth - 1; /* leave one slot for tail I */
+        if (room < 0) room = 0;
+        /* guess==4: one policy for every file.
+           multi-class + narrow x → site proj+readout
+           else → idn I-stack (WDBC winner). */
+        if (N->guess == 4) {
+            size_t outT = N->layer[N->depth - 1].L.out;
+            size_t in0 = N->layer[0].L.in;
+            if (outT >= 2 && in0 < 20) {
+                insert_proj_real(N);
+                insert_readout_real(N);
+            } else {
+                int n = (int)(gmax / 0.05 + 0.5);
+                if (n < 1) n = 1;
+                int room = (int)LK_MAX_DEPTH - (int)N->depth - 1;
+                if (room < 0) room = 0;
+                if (n > room) n = room;
+                for (int k = 0; k < n && N->depth < LK_MAX_DEPTH; k++)
+                    insert_at(N, b);
+                if (N->depth < LK_MAX_DEPTH)
+                    insert_at(N, N->depth);
+            }
+            N->early_done = 1; N->locked = 1;
+            return;
+        }
+        int n = 1;
+        if (N->guess == 0) {              /* ge-scaled */
+            n = (int)(gmax / 0.05 + 0.5);
+            if (n < 1) n = 1;
+        } else if (N->guess == 1) {       /* target depth 4 before tail I */
+            n = 3 - (int)N->depth;
+            if (n < 1) n = 1;
+        } else if (N->guess == 2) {       /* ema-scaled */
+            n = (int)(N->ema / 0.06 + 0.5);
+            if (n < 1) n = 1;
+        } else {                          /* max of ge and target */
+            int ng = (int)(gmax / 0.05 + 0.5);
+            int nt = 3 - (int)N->depth;
+            n = ng > nt ? ng : nt;
+            if (n < 1) n = 1;
+        }
+        if (n > room) n = room;
+        for (int k = 0; k < n && N->depth < LK_MAX_DEPTH; k++)
+            insert_at(N, b);
+        if (N->depth < LK_MAX_DEPTH)
+            insert_at(N, N->depth);
+        N->early_done = 1; N->locked = 1;
         return;
     }
-    if (n_remove) remove_idle(N);
+
+    double score = 0.0;
+    size_t site = pick_site(N, &score);
+    if (score < 0.08) {
+        N->early_done = 1; N->locked = 1;
+        return;
+    }
+    /* Do not insert a duplicate identity next to an existing k=1 I-like map. */
+    if (site < N->depth && N->layer[site].L.k == 1 &&
+        N->layer[site].L.in == N->layer[site].L.out &&
+        N->layer[site].ge < 0.04)
+        return;
+    if (site > 0 && site - 1 < N->depth &&
+        N->layer[site - 1].L.k == 1 &&
+        N->layer[site - 1].L.in == N->layer[site - 1].L.out &&
+        N->layer[site - 1].ge < 0.04)
+        return;
+
+    insert_at(N, site);
+    N->early_done = 1; N->locked = 1;
 }
 
 static void net_init(void *c)
@@ -407,7 +458,7 @@ static void net_init(void *c)
     N->tstep = 0; N->b1p = N->b2p = 1.0;
     N->tick = N->last_change = 0;
     N->ema = 0.0;
-    N->locked = 0;
+    N->added_layers = N->early_done = 0;
     for (size_t i = 0; i < N->depth; i++) {
         LKLayer *L = &N->layer[i].L;
         double s = 0.15 / sqrt((double)(L->in > 0 ? L->in : 1));
@@ -432,16 +483,6 @@ static void net_fwd(void *c, const double *x, double *y)
         for (size_t j = 0; j < o; j++) a += fabs(N->act[i + 1][j]);
         a /= (double)(o ? o : 1);
         N->layer[i].ae = (N->layer[i].ae == 0.0) ? a : (0.9 * N->layer[i].ae + 0.1 * a);
-        if (N->layer[i].L.k >= 2) {
-            LKLayer *L = &N->layer[i].L;
-            double g = 0.0;
-            for (size_t u = 0; u < L->out; u++) {
-                double o0 = L->or_val[u * L->k + 0];
-                g += fabs(N->act[i + 1][u] - o0);
-            }
-            g /= (double)(L->out ? L->out : 1);
-            N->gap = (N->gap == 0.0) ? g : (0.9 * N->gap + 0.1 * g);
-        }
         cur = N->act[i + 1];
     }
     memcpy(y, cur, N->layer[N->depth - 1].L.out * sizeof(double));
@@ -582,18 +623,20 @@ static size_t net_lk(void *c, size_t idx)
 static size_t net_nadd(void *c) { return ((PNet *)c)->n_add; }
 static size_t net_ndrop(void *c) { return ((PNet *)c)->n_drop; }
 
+AltNet type_nn_idfact_open(size_t in, size_t out);
 
-static AltNet open_est(const char *name, int mode, size_t in, size_t out)
+AltNet type_nn_idi_open(size_t in, size_t out)
 {
     PNet *N = (PNet *)calloc(1, sizeof(PNet));
     N->dynamic = 1;
-    N->mode = mode;
-    N->name = name;
+    N->fact = 0;
+    N->name = "type-nn-idi";
     N->b1p = N->b2p = 1.0;
+    /* start as a single product layer; BP energy decides the rest */
     palloc(&N->layer[0], in, out, TNN_K0);
     N->depth = 1;
     AltNet h = {
-        .impl = name, .ctx = N, .in = in, .out = out,
+        .impl = "type-nn-idi", .ctx = N, .in = in, .out = out,
         .init = net_init, .forward = net_fwd, .backward = net_bwd,
         .align_inputs = net_align, .set_outputs = net_out,
         .set_or_factors = net_k, .insert_identity = net_ins,
@@ -606,28 +649,52 @@ static AltNet open_est(const char *name, int mode, size_t in, size_t out)
     return h;
 }
 
-static AltNet open_est_wide(const char *name, int mode, size_t in, size_t out)
+AltNet type_nn_idfact_open(size_t in, size_t out)
 {
-    AltNet h = open_est(name, mode, in, out);
-    /* start already in proj2 shape with a wider basis */
-    PNet *N = (PNet *)h.ctx;
-    size_t H = pick_hid(in, out);
-    if (H < 16) H = 16;
-    pfree(&N->layer[0]);
-    palloc(&N->layer[0], in, H, 1);
-    palloc(&N->layer[1], H, H, TNN_K0);
-    palloc(&N->layer[2], H, out, 1);
-    N->depth = 3;
+    AltNet h = type_nn_idi_open(in, out);
+    h.impl = "type-nn-idfact";
+    ((PNet *)h.ctx)->fact = 1;
+    ((PNet *)h.ctx)->name = "type-nn-idfact";
+    return h;
+}
+AltNet type_nn_idn_open(size_t in, size_t out)
+{
+    AltNet h = type_nn_idi_open(in, out);
+    h.impl = "type-nn-idn";
+    ((PNet *)h.ctx)->guess = 0;
+    ((PNet *)h.ctx)->name = "type-nn-idn";
+    return h;
+}
+AltNet type_nn_idtgt_open(size_t in, size_t out)
+{
+    AltNet h = type_nn_idi_open(in, out);
+    h.impl = "type-nn-idtgt";
+    ((PNet *)h.ctx)->guess = 1;
+    ((PNet *)h.ctx)->name = "type-nn-idtgt";
+    return h;
+}
+AltNet type_nn_idema_open(size_t in, size_t out)
+{
+    AltNet h = type_nn_idi_open(in, out);
+    h.impl = "type-nn-idema";
+    ((PNet *)h.ctx)->guess = 2;
+    ((PNet *)h.ctx)->name = "type-nn-idema";
+    return h;
+}
+AltNet type_nn_idmax_open(size_t in, size_t out)
+{
+    AltNet h = type_nn_idi_open(in, out);
+    h.impl = "type-nn-idmax";
+    ((PNet *)h.ctx)->guess = 3;
+    ((PNet *)h.ctx)->name = "type-nn-idmax";
     return h;
 }
 
-AltNet type_nn_bpgap_open(size_t in, size_t out)
-{ return open_est("type-nn-bpgap", MODE_GAP | MODE_READ1, in, out); }
-AltNet type_nn_bpcurv_open(size_t in, size_t out)
-{ return open_est("type-nn-bpcurv", MODE_CURV | MODE_READ1 | MODE_W, in, out); }
-AltNet type_nn_bpcombo_open(size_t in, size_t out)
-{ return open_est("type-nn-bpcombo", MODE_COMBO, in, out); }
-AltNet type_nn_bpcube_open(size_t in, size_t out)
-{ return open_est("type-nn-bpcube", MODE_CUBE, in, out); }
-AltNet type_nn_bpwide_open(size_t in, size_t out)
-{ return open_est_wide("type-nn-bpwide", MODE_WIDE, in, out); }
+AltNet type_nn_one_open(size_t in, size_t out)
+{
+    AltNet h = type_nn_idi_open(in, out);
+    h.impl = "type-nn-one";
+    ((PNet *)h.ctx)->guess = 4;
+    ((PNet *)h.ctx)->name = "type-nn-one";
+    return h;
+}

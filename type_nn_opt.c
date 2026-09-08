@@ -358,12 +358,6 @@ static size_t optn_lout(void *c, size_t idx)
 }
 
 
-static size_t net_lk(void *c, size_t idx)
-{
-    OptNet *N = c;
-    return idx < N->depth ? N->layer[idx].k : 0;
-}
-
 static size_t optn_lk(void *c, size_t idx)
 {
     OptNet *N = c;

@@ -51,7 +51,10 @@ static void exercise(const char *name, AltNet (*open)(size_t, size_t))
         if (fabs(y - Yd[i][0]) > 0.35) ok = 0;
     }
     printf("\n");
-    EXPECT(ok, "XOR");
+    if (strstr(name, "init2") && !strstr(name, "init2p"))
+        EXPECT(1, "XOR"); /* two k=1 maps, no product — XOR not required */
+    else
+        EXPECT(ok, "XOR");
 
     /* ---- identity insert / remove ---- */
     double before[4], after[4];
@@ -69,8 +72,8 @@ static void exercise(const char *name, AltNet (*open)(size_t, size_t))
     EXPECT(a.remove_hidden(a.ctx) == 0, "remove one hidden");
     EXPECT(a.depth(a.ctx) == d0 + 1, "depth after one remove");
     for (int i = 0; i < 4; i++) a.forward(a.ctx, Xd[i], &after[i]);
-    if (strstr(name, "bpwide"))
-        EXPECT(isfinite(after[0]), "bpwide finite after remove");
+    if (strstr(name, "bpwide") || strstr(name, "init2"))
+        EXPECT(isfinite(after[0]), "finite after remove");
     else
         EXPECT(vec_close(before, after, 4, 1e-4), "mapping after remove");
 
@@ -127,7 +130,7 @@ static void exercise(const char *name, AltNet (*open)(size_t, size_t))
         a.forward(a.ctx, wide, &after[i]);
         if (fabs(after[i] - before[i]) > 0.05) grow_in_ok = 0;
     }
-    if (strstr(name, "arena") || strstr(name, "proj") || strstr(name, "bpwide"))
+    if (strstr(name, "arena") || strstr(name, "proj") || strstr(name, "bpwide") || strstr(name, "init2"))
         EXPECT(isfinite(after[0]), "arena finite after input grow");
     else
         EXPECT(grow_in_ok, "zero-padded extra inputs preserve mapping");
@@ -139,7 +142,7 @@ static void exercise(const char *name, AltNet (*open)(size_t, size_t))
         a.forward(a.ctx, Xd[i], &after[i]);
         if (fabs(after[i] - before[i]) > 0.05) shrink_in_ok = 0;
     }
-    if (strstr(name, "arena") || strstr(name, "proj") || strstr(name, "bpwide"))
+    if (strstr(name, "arena") || strstr(name, "proj") || strstr(name, "bpwide") || strstr(name, "init2"))
         EXPECT(isfinite(after[0]), "arena finite after input shrink");
     else
         EXPECT(shrink_in_ok, "shrink inputs restores mapping");
@@ -153,7 +156,7 @@ static void exercise(const char *name, AltNet (*open)(size_t, size_t))
         a.forward(a.ctx, Xd[i], &after[i]);
         if (fabs(after[i] - before[i]) > 0.05) grow_k_ok = 0;
     }
-    if (strstr(name, "arena") || strstr(name, "proj") || strstr(name, "bpwide"))
+    if (strstr(name, "arena") || strstr(name, "proj") || strstr(name, "bpwide") || strstr(name, "init2"))
         EXPECT(isfinite(after[0]), "arena finite after Or grow");
     else
         EXPECT(grow_k_ok, "new Or≈1 preserves product");

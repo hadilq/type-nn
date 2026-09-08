@@ -380,8 +380,12 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
                 /* width is fixed by X[s] length the caller owns; no-op here */
             }
             a->forward(a->ctx, X[s], pred);
+            /* torch MSE grad is (pred-y)/out per channel (mean over elements).
+               Without this, a 3-class head gets 3× the pull of WDBC's 1-class
+               head and cannot drive the unused classes to 0 independently. */
+            double inv = 1.0 / (double)(a->out ? a->out : 1);
             for (size_t k = 0; k < a->out; k++)
-                dy[k] = pred[k] - Y[s][k];
+                dy[k] = (pred[k] - Y[s][k]) * inv;
             a->backward(a->ctx, X[s], dy, lr);
             if (a->insert_identity && a->depth && a->depth(a->ctx) == 1) {
                 double mag = 0.0;
@@ -430,44 +434,37 @@ extern AltNet type_nn_bpcurv_open(size_t, size_t);
 extern AltNet type_nn_bpcombo_open(size_t, size_t);
 extern AltNet type_nn_bpcube_open(size_t, size_t);
 extern AltNet type_nn_bpwide_open(size_t, size_t);
+extern AltNet type_nn_bpsite_open(size_t, size_t);
+extern AltNet type_nn_bpearly_open(size_t, size_t);
+extern AltNet type_nn_bpdeep_open(size_t, size_t);
 extern AltNet type_nn_lin_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
-    type_nn_arena_open,
-    type_nn_soa_open,
-    type_nn_gemm_open,
-    type_nn_csr_open,
-    type_nn_hotcold_open,
-    type_nn_q8_open,
-    type_nn_tape_open,
-    type_nn_opt_q8_open,
     type_nn_opt_open,
-    type_nn_bp_open,
-    type_nn_mom_open,
-    type_nn_adam_open,
-    type_nn_bpgemm_open,
-    type_nn_dyn_open,
-    type_nn_dyn_sgd_open,
-    type_nn_dyn_k_open,
-    type_nn_dyn_w_open,
-    type_nn_dyn_l_open,
-    type_nn_dyn_adam_open,
     type_nn_proj_open,
-    type_nn_proj_dyn_open,
     type_nn_proj2_open,
-    type_nn_proj2_dyn_open,
-    type_nn_bpdyn_open,
-    type_nn_bpgap_open,
-    type_nn_bpcurv_open,
-    type_nn_bpcombo_open,
-    type_nn_bpcube_open,
     type_nn_bpwide_open,
+    type_nn_bpcombo_open,
+    type_nn_bpsite_open,
+    type_nn_bpearly_open,
+    type_nn_bpdeep_open,
+    type_nn_idi_open,
+    type_nn_idfact_open,
+    type_nn_idn_open,
+    type_nn_idtgt_open,
+    type_nn_idema_open,
+    type_nn_idmax_open,
+    type_nn_typefact_open,
+    type_nn_adapt_open,
+    type_nn_init2_open,
+    type_nn_init2p_open,
+    type_nn_one_open,
 };
 static const char *const NAMES[] = {
-    "type-nn-arena", "type-nn-soa", "type-nn-gemm", "type-nn-csr",
-    "type-nn-hotcold", "type-nn-q8", "type-nn-tape", "type-nn-opt-q8",
-    "type-nn-opt", "type-nn-bp", "type-nn-mom", "type-nn-adam",
-    "type-nn-bpgemm", "type-nn-dyn", "type-nn-dyn-sgd", "type-nn-dyn-k", "type-nn-dyn-w", "type-nn-dyn-l", "type-nn-dyn-adam", "type-nn-proj", "type-nn-proj-dyn", "type-nn-proj2", "type-nn-proj2-dyn", "type-nn-bpdyn", "type-nn-bpgap", "type-nn-bpcurv", "type-nn-bpcombo", "type-nn-bpcube", "type-nn-bpwide",
+    "type-nn-opt", "type-nn-proj", "type-nn-proj2",
+    "type-nn-bpwide", "type-nn-bpcombo", "type-nn-bpsite",
+    "type-nn-bpearly", "type-nn-bpdeep",
+    "type-nn-idi", "type-nn-idfact", "type-nn-idn", "type-nn-idtgt", "type-nn-idema", "type-nn-idmax", "type-nn-typefact", "type-nn-adapt", "type-nn-init2", "type-nn-init2p", "type-nn-one",
 };
 
 size_t type_nn_alt_count(void)
