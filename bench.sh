@@ -16,7 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt.c"
+ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
@@ -50,23 +50,25 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_ben
         pass
 
 print()
-print("task         impl         train_s   us/infer    nbytes   params       mse      acc")
-print("-" * 90)
+print("task         impl               params   nbytes  us/infer   train_s       mse      acc")
+print("-" * 96)
 by = collections.defaultdict(list)
 for r in rows:
     by[r["task"]].append(r)
 order = ("xor", "quadratic", "mlp32x16x8", "iris", "wine", "wdbc", "diabetes")
-impl_order = ("type-nn","type-nn-arena","type-nn-soa","type-nn-gemm",
-              "type-nn-csr","type-nn-hotcold","type-nn-q8","type-nn-tape",
-              "type-nn-opt","torch-mlp","torch-poly")
 for task in order:
     block = by.get(task, [])
-    block.sort(key=lambda r: impl_order.index(r["impl"]) if r["impl"] in impl_order else 99)
+    block.sort(key=lambda r: (
+        r.get("params", 1 << 30),
+        r.get("nbytes", 1 << 30),
+        r.get("us_per_infer", 1e300),
+        r.get("train_s", 1e300),
+    ))
     for r in block:
         acc = r.get("acc", -1)
         acc_s = "   n/a" if acc is None or acc < 0 else f"{acc:6.3f}"
-        print(f"{r['task']:<12} {r['impl']:<12} {r['train_s']:8.4f}  "
-              f"{r['us_per_infer']:8.3f}  {r['nbytes']:8d}  {r['params']:7d}  "
+        print(f"{r['task']:<12} {r['impl']:<18} {r['params']:7d}  {r['nbytes']:7d}  "
+              f"{r['us_per_infer']:8.3f}  {r['train_s']:8.4f}  "
               f"{r['mse']:.6f}  {acc_s}")
     if block:
         print()
@@ -79,6 +81,8 @@ print("  • type-nn-csr     = CSR affine map.")
 print("  • type-nn-hotcold = first 16 features dense.")
 print("  • type-nn-q8      = int8 weights + per-Or scale.")
 print("  • type-nn-tape    = Wengert-list reverse mode.")
-print("  • type-nn-opt     = int8 + unrolled dot, smallest+fastest combo.")
+print("  • type-nn-opt-q8  = previous packed opt (int8); XOR MSE is not exactly 0.")
+print("  • type-nn-opt     = double W + adaptive SoA/GEMV, one-pass backward.")
+print("  • Rows sorted by (params, nbytes, us/infer, train_s), all ascending.")
 print("  • All type-nn-* variants have And/Or layers, grow/shrink, insert/remove.")
 PY

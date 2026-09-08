@@ -49,6 +49,7 @@ AltNet type_nn_csr_open(size_t in, size_t out);
 AltNet type_nn_hotcold_open(size_t in, size_t out);
 AltNet type_nn_q8_open(size_t in, size_t out);
 AltNet type_nn_tape_open(size_t in, size_t out);
+AltNet type_nn_opt_q8_open(size_t in, size_t out);
 AltNet type_nn_opt_open(size_t in, size_t out);
 
 void   type_nn_alt_train(AltNet *a, double **X, double **Y,

@@ -141,9 +141,10 @@ hidden-layer remove. `type_nn.c` stays frozen.
 | type-nn-hotcold | `type_nn_hotcold.c` | 0.017 | 0.048 | 0.061 | 816 |
 | type-nn-q8 | `type_nn_q8.c` | 0.017 | 0.043 | 0.065 | 412 |
 | type-nn-tape | `type_nn_tape.c` | 0.012 | 0.027 | 0.053 | 5944 |
-| **type-nn-opt** | `type_nn_opt.c` | 0.017 | 0.034 | **0.044** | **92** |
+| type-nn-opt-q8 | `type_nn_opt_q8.c` | 0.019 | 0.034 | 0.045 | **92** |
+| **type-nn-opt** | `type_nn_opt.c` | 0.025 | 0.032 | 0.047 | 496 |
 
-Second-pass `type-nn-opt` (what the first table taught us):
+Packed int8 pass (now `type-nn-opt-q8`):
 
 - deployed payload is int8 `W` + per-Or scale + bias (`nbytes` is just that)
 - a float panel is rebuilt only when weights change, then SoA (`in < 16`)
@@ -202,3 +203,21 @@ network_free(net);
 inputs through two Or factors overflow the And clip and the net does not
 fit. That is a model/representation issue the data-structure list above
 is meant to address later — not a loader bug (569 rows parse, 30 features).
+
+
+### type-nn-opt vs type-nn-opt-q8
+
+The previous packed opt snapped every update to int8 (`1/127`), so XOR
+MSE sat at `8.17e-6` instead of `0`. That net is kept as
+`type-nn-opt-q8`. A new `type-nn-opt` uses double `W` (same arithmetic
+as SoA/GEMM), adaptive SoA/GEMV, one-pass backward, payload-only
+`nbytes`.
+
+| impl | XOR mse | XOR µs | Iris µs | WDBC µs | WDBC nbytes |
+|------|---------|--------|---------|---------|-------------|
+| type-nn-soa | 0 | 0.014 | 0.027 | 0.054 | 792 |
+| type-nn-gemm | 0 | 0.024 | 0.043 | 0.049 | 792 |
+| type-nn-opt-q8 | 8.17e-6 | 0.019 | 0.034 | 0.045 | **92** |
+| **type-nn-opt** | **0** | 0.025 | 0.032 | 0.047 | 496 |
+
+Bench rows are sorted by `(params, nbytes, us/infer, train_s)`.

@@ -374,6 +374,7 @@ extern AltNet type_nn_csr_open(size_t, size_t);
 extern AltNet type_nn_hotcold_open(size_t, size_t);
 extern AltNet type_nn_q8_open(size_t, size_t);
 extern AltNet type_nn_tape_open(size_t, size_t);
+extern AltNet type_nn_opt_q8_open(size_t, size_t);
 extern AltNet type_nn_opt_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
@@ -384,11 +385,13 @@ static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_hotcold_open,
     type_nn_q8_open,
     type_nn_tape_open,
+    type_nn_opt_q8_open,
     type_nn_opt_open,
 };
 static const char *const NAMES[] = {
     "type-nn-arena", "type-nn-soa", "type-nn-gemm", "type-nn-csr",
-    "type-nn-hotcold", "type-nn-q8", "type-nn-tape", "type-nn-opt",
+    "type-nn-hotcold", "type-nn-q8", "type-nn-tape", "type-nn-opt-q8",
+    "type-nn-opt",
 };
 
 size_t type_nn_alt_count(void)
