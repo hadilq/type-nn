@@ -221,3 +221,21 @@ as SoA/GEMM), adaptive SoA/GEMV, one-pass backward, payload-only
 | **type-nn-opt** | **0** | 0.025 | 0.032 | 0.047 | 496 |
 
 Bench rows are sorted by `(params, nbytes, us/infer, train_s)`.
+
+
+## Optimizer experiments
+
+Faithful And/Or nets (`type_nn_bp.c`, `type_nn_mom.c`, `type_nn_adam.c`)
+with grow/shrink and identity insert/remove. `type_nn.c` is frozen.
+
+| impl | idea | XOR mse | Iris acc | WDBC mse | WDBC nbytes |
+|------|------|---------|----------|----------|-------------|
+| type-nn-opt | SGD, one-pass bwd | 0 | 0.90 | 190.6 | 496 |
+| type-nn-bp | prefix/suffix dOr + fused dx | 0 | 0.90 | 190.6 | 496 |
+| type-nn-mom | Polyak momentum μ=0.5 | 0 | 0.45 | 250.5 | 992 |
+| type-nn-adam | Adam β=(0.9,0.999), α capped | ~3e-6 | 0.69 | **0.80** | 1488 |
+
+Adam is the first layout that brings WDBC MSE down from ~190 to <1
+(the product of affines on 30-D z-scored inputs explodes under plain
+SGD). Momentum needs a gentler μ than the CNN default 0.9 — 0.5 fits
+XOR. Moments cost 2× (mom) or 3× (adam) the payload.

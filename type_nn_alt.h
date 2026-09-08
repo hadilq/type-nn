@@ -51,6 +51,9 @@ AltNet type_nn_q8_open(size_t in, size_t out);
 AltNet type_nn_tape_open(size_t in, size_t out);
 AltNet type_nn_opt_q8_open(size_t in, size_t out);
 AltNet type_nn_opt_open(size_t in, size_t out);
+AltNet type_nn_bp_open(size_t in, size_t out);
+AltNet type_nn_mom_open(size_t in, size_t out);
+AltNet type_nn_adam_open(size_t in, size_t out);
 
 void   type_nn_alt_train(AltNet *a, double **X, double **Y,
                          size_t n, size_t epochs, double lr);

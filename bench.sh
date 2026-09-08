@@ -16,7 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c"
+ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
@@ -83,6 +83,9 @@ print("  • type-nn-q8      = int8 weights + per-Or scale.")
 print("  • type-nn-tape    = Wengert-list reverse mode.")
 print("  • type-nn-opt-q8  = previous packed opt (int8); XOR MSE is not exactly 0.")
 print("  • type-nn-opt     = double W + adaptive SoA/GEMV, one-pass backward.")
+print("  • type-nn-bp      = prefix/suffix dOr, fused dx, still SGD.")
+print("  • type-nn-mom     = SGD + momentum (μ=0.9) on And/Or weights.")
+print("  • type-nn-adam    = Adam (β1=0.9, β2=0.999) on And/Or weights.")
 print("  • Rows sorted by (params, nbytes, us/infer, train_s), all ascending.")
 print("  • All type-nn-* variants have And/Or layers, grow/shrink, insert/remove.")
 PY
