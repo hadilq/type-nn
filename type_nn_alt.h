@@ -1,0 +1,60 @@
+#ifndef TYPE_NN_ALT_H
+#define TYPE_NN_ALT_H
+
+#include <stddef.h>
+
+/*
+ * Alternate layouts of the Type Mechanics AND/OR net.
+ * type_nn.h / type_nn.c are not compiled into these objects.
+ *
+ *   Or_{i,k} = b_{i,k} + Σ_j W[i,k,j] x_j     (sum-type)
+ *   And_i    = Π_k Or_{i,k}                    (product-type)
+ *
+ * Every layout supports:
+ *   - multiple And/Or layers
+ *   - grow / shrink input width and output width
+ *   - grow / shrink the number of Or factors
+ *   - insert an identity hidden layer / remove a hidden layer
+ */
+
+typedef struct AltNet AltNet;
+
+struct AltNet {
+    const char *impl;
+    void       *ctx;
+    size_t      in, out;
+
+    void   (*init)(void *ctx);
+    void   (*forward)(void *ctx, const double *x, double *y);
+    void   (*backward)(void *ctx, const double *x, const double *dy, double lr);
+
+    void   (*align_inputs)(void *ctx, size_t in);
+    void   (*set_outputs)(void *ctx, size_t out);
+    void   (*set_or_factors)(void *ctx, size_t k);
+    void   (*insert_identity)(void *ctx);
+    int    (*remove_hidden)(void *ctx);
+    void   (*set_dynamic)(void *ctx, int on);
+
+    size_t (*depth)(void *ctx);
+    size_t (*or_factors)(void *ctx);
+    size_t (*param_count)(void *ctx);
+    size_t (*nbytes)(void *ctx);
+    void   (*free)(void *ctx);
+};
+
+AltNet type_nn_arena_open(size_t in, size_t out);
+AltNet type_nn_soa_open(size_t in, size_t out);
+AltNet type_nn_gemm_open(size_t in, size_t out);
+AltNet type_nn_csr_open(size_t in, size_t out);
+AltNet type_nn_hotcold_open(size_t in, size_t out);
+AltNet type_nn_q8_open(size_t in, size_t out);
+AltNet type_nn_tape_open(size_t in, size_t out);
+AltNet type_nn_opt_open(size_t in, size_t out);
+
+void   type_nn_alt_train(AltNet *a, double **X, double **Y,
+                         size_t n, size_t epochs, double lr);
+size_t type_nn_alt_count(void);
+const char *type_nn_alt_name(size_t i);
+AltNet (*type_nn_alt_opener(size_t i))(size_t, size_t);
+
+#endif

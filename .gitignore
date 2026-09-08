@@ -1,7 +1,10 @@
 .direnv/
 test_type_nn
 test_type_nn_asan
-vortex
+vortex*
+bench_alts
+test_alts
 bench_type_nn
 data/*.data
+data/diabetes.tab.txt
 

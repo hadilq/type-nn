@@ -64,6 +64,7 @@
           echo "TYPE_NN_DATA=$TYPE_NN_DATA"
           echo "datasets: iris wine wdbc diabetes"
           cp $TYPE_NN_DATA/*.data data/
+          cp $TYPE_NN_DATA/diabetes.tab.txt data/
         '';
       };
 

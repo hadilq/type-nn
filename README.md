@@ -50,8 +50,11 @@ Here the product *is* the non-linearity.
 | `run.c`           | XOR / sin(x) / structure demos              |
 | `dataset.h/.c`    | Iris / Wine / WDBC / Diabetes loaders       |
 | `bench_type_nn.c` | C wall-clock + RSS + real-data bench        |
+| `bench_alts.c`    | same tasks for every `type-nn-*` layout     |
+| `type_nn_alt.h`   | And/Or stack API (grow/shrink, insert/remove) |
+| `type_nn_*.c`     | arena soa gemm csr hotcold q8 tape **opt**  |
 | `bench_torch.py`  | PyTorch CPU baselines                       |
-| `bench.sh`        | comparison table                            |
+| `bench.sh`        | comparison table (lists + alts + torch)     |
 | `flake.nix`       | dev shell, package, **pinned dataset fetch**|
 
 ## Build
@@ -95,7 +98,12 @@ The flake `devShell` exports `TYPE_NN_DATA` to the pinned store path so a
 ./bench.sh iris
 ```
 
-## Better data structures (not applied in this iteration)
+## Better data structures (sibling implementations)
+
+`type_nn.h` and `type_nn.c` are **frozen**. Each idea lives in its own
+files and shows up as its own `impl` row in `./bench.sh`. Same And/Or
+math, K = 2.
+
 
 The live graph is still four singly-linked, heap-allocated node types
 (`WeightNode`, `OrNode`, `AndNode`, `InOutNode`) keyed by `right_index`.
@@ -119,10 +127,34 @@ math**:
 | 11 | **Layer as a single byte blob + header** | `network_nbytes` becomes the allocation; memcpy checkpoint | pointers inside must be rebaseable |
 | 12 | **Do not change anything for depth-1 XOR-scale nets** | 6 parameters, ~0.1 µs — lists are not the bottleneck there | — |
 
-Practical order if/when we *do* change it: **(1) arena + integer links**,
-then **(2) SoA weights**, then **(3) GEMM when `in_size ≥ 16`**. That
-keeps the Type Mechanics constructors (Or = sum, And = product) and
-drops the pointer-chasing tax that shows up on `wdbc` / `mlp32x16x8`.
+Every `type-nn-*` layout is a full And/Or net: product-of-affines per
+layer, grow/shrink of `in` / `out` / Or-count, identity-layer insert and
+hidden-layer remove. `type_nn.c` stays frozen.
+
+| impl | file | XOR µs | Iris µs | WDBC µs | WDBC nbytes |
+|------|------|--------|---------|---------|-------------|
+| type-nn | `type_nn.c` frozen | 0.108 | 0.293 | 1.745 | 4696 |
+| type-nn-arena | `type_nn_arena.c` | 0.017 | 0.054 | 0.199 | 2000 |
+| type-nn-soa | `type_nn_soa.c` | 0.013 | 0.027 | 0.054 | 792 |
+| type-nn-gemm | `type_nn_gemm.c` | 0.022 | 0.042 | 0.047 | 792 |
+| type-nn-csr | `type_nn_csr.c` | 0.017 | 0.045 | 0.061 | 1084 |
+| type-nn-hotcold | `type_nn_hotcold.c` | 0.017 | 0.048 | 0.061 | 816 |
+| type-nn-q8 | `type_nn_q8.c` | 0.017 | 0.043 | 0.065 | 412 |
+| type-nn-tape | `type_nn_tape.c` | 0.012 | 0.027 | 0.053 | 5944 |
+| **type-nn-opt** | `type_nn_opt.c` | 0.017 | 0.034 | **0.044** | **92** |
+
+Second-pass `type-nn-opt` (what the first table taught us):
+
+- deployed payload is int8 `W` + per-Or scale + bias (`nbytes` is just that)
+- a float panel is rebuilt only when weights change, then SoA (`in < 16`)
+  or blocked GEMV (`in ≥ 16`) runs on it — same trick as `type-nn-q8`
+  not counting its float shadow
+- `k == 2` And is a single multiply
+- backward does **not** re-forward the stack (activations are kept)
+
+On WDBC that is faster than GEMV and ~4.5× smaller than Q8's advertised
+row. XOR stays in the SoA noise floor; the extra layer bookkeeping is
+why a 2-input net is not the absolute fastest.
 
 ## Dynamic scaling
 
