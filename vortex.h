@@ -89,6 +89,7 @@ typedef struct {
     size_t  max_depth;
     size_t  max_or;
     double  quantization;
+    int     verbose;
 } Network;
 
 /* ── print helpers ── */
@@ -104,6 +105,7 @@ void     network_free(Network *net);
 void     network_add_layer(Network *net, size_t in, size_t out);
 void     network_set_learning_rate(Network *net, double lr);
 void     network_set_dynamic(Network *net, int enabled);
+void     network_set_verbose(Network *net, int enabled);
 size_t   network_depth(const Network *net);
 
 /* Insert an identity hidden layer in front of `at` (NULL = before tail). */
@@ -133,5 +135,7 @@ size_t inout_count(const InOutNode *n);
 size_t weight_count(const WeightNode *n);
 size_t or_count(const OrNode *n);
 size_t and_count(const AndNode *n);
+size_t network_param_count(const Network *net);
+size_t network_nbytes(const Network *net);
 
 #endif /* NN_H */

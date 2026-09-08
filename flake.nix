@@ -15,6 +15,12 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
 
+      py = pkgs.python3.withPackages (
+        ps: with ps; [
+          torch
+        ]
+      );
+
       devShell = pkgs.mkShell {
         packages = with pkgs; [
           gcc
@@ -22,6 +28,7 @@
           gdb
           clang
           pkg-config
+          py
         ];
       };
 
@@ -32,10 +39,10 @@
           pkgs.gcc
           pkgs.gnumake
         ];
-        buildPhase = "make vortex test_vortex";
+        buildPhase = "make vortex test_vortex bench_vortex";
         installPhase = ''
           mkdir -p $out/bin
-          cp vortex test_vortex $out/bin/
+          cp vortex test_vortex bench_vortex $out/bin/
         '';
       };
     in

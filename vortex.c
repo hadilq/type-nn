@@ -87,6 +87,42 @@ size_t network_depth(const Network *net)
     return net ? net->depth : 0;
 }
 
+size_t network_param_count(const Network *net)
+{
+    if (!net) return 0;
+    size_t n = 0;
+    for (const Layer *l = net->head; l; l = l->next) {
+        for (const AndNode *a = l->and_row; a; a = a->right) {
+            for (const OrNode *o = a->or_row; o; o = o->right) {
+                n += 1; /* bias */
+                n += weight_count(o->weight);
+            }
+        }
+    }
+    return n;
+}
+
+size_t network_nbytes(const Network *net)
+{
+    if (!net) return 0;
+    size_t bytes = sizeof(Network);
+    for (const Layer *l = net->head; l; l = l->next) {
+        bytes += sizeof(Layer);
+        for (const InOutNode *n = l->in; n; n = n->right) bytes += sizeof(InOutNode);
+        for (const InOutNode *n = l->out; n; n = n->right) bytes += sizeof(InOutNode);
+        for (const InOutNode *n = l->din; n; n = n->right) bytes += sizeof(InOutNode);
+        for (const AndNode *a = l->and_row; a; a = a->right) {
+            bytes += sizeof(AndNode);
+            for (const OrNode *o = a->or_row; o; o = o->right) {
+                bytes += sizeof(OrNode);
+                for (const WeightNode *w = o->weight; w; w = w->right)
+                    bytes += sizeof(WeightNode);
+            }
+        }
+    }
+    return bytes;
+}
+
 /* ════════════════════════════════════════════
    Weight list
    ════════════════════════════════════════════ */
@@ -614,6 +650,8 @@ void network_add_layer(Network *net, size_t in, size_t out)
 Network *network_create(size_t in, size_t out)
 {
     Network *net = (Network *)calloc(1, sizeof(Network));
+    if (in == 0) in = 1;
+    if (out == 0) out = 1;
     net->in_size = in;
     net->out_size = out;
     net->lr = DEFAULT_LR;
@@ -621,6 +659,7 @@ Network *network_create(size_t in, size_t out)
     net->max_depth = DEFAULT_MAX_DEPTH;
     net->max_or = DEFAULT_MAX_OR;
     net->quantization = DEFAULT_QUANT;
+    net->verbose = 1;
     network_add_layer(net, in, out);
     return net;
 }
@@ -654,6 +693,11 @@ void network_set_learning_rate(Network *net, double lr)
 void network_set_dynamic(Network *net, int enabled)
 {
     if (net) net->dynamic = enabled ? 1 : 0;
+}
+
+void network_set_verbose(Network *net, int enabled)
+{
+    if (net) net->verbose = enabled ? 1 : 0;
 }
 
 static void layer_make_identity(Layer *l)
@@ -692,8 +736,8 @@ int network_remove_layer(Network *net, Layer *node)
     if (net->head == net->tail) return -1;          /* keep at least one */
     if (node == net->tail) return -1;               /* keep output layer */
     /* Neighbours must agree on width. */
-    if (node->next && node->out_size != node->next->in_size) {
-        /* still allow if we realign the next layer */
+    if (node->next && node->next->in_size != node->in_size) {
+        /* Skip the removed layer: the next one now consumes its inputs. */
         layer_align_inputs(node->next, node->in_size);
         node->next->in_size = node->in_size;
     }
@@ -1107,7 +1151,7 @@ void network_train(Network *net,
             in_out_free(y_mat);
         }
 
-        if ((ep + 1) % 100 == 0 || ep == 0 || ep + 1 == epochs) {
+        if (net->verbose && ((ep + 1) % 100 == 0 || ep == 0 || ep + 1 == epochs)) {
             printf("Epoch %5zu / %zu  |  MSE loss = %.6f  |  depth = %zu\n",
                    ep + 1, epochs, total_loss / (double)n_samples, net->depth);
         }
