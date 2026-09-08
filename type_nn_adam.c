@@ -265,6 +265,12 @@ static size_t net_lout(void *c, size_t idx)
     AdNet *N = c;
     return idx < N->depth ? N->layer[idx].L.out : 0;
 }
+
+static size_t net_lk(void *c, size_t idx)
+{
+    AdNet *N = c;
+    return idx < N->depth ? N->layer[idx].L.k : 0;
+}
 AltNet type_nn_adam_open(size_t in, size_t out)
 {
     AdNet *N = (AdNet *)calloc(1, sizeof(AdNet));
@@ -279,7 +285,7 @@ AltNet type_nn_adam_open(size_t in, size_t out)
         .remove_hidden = net_rem, .set_dynamic = net_dyn,
         .depth = net_depth, .or_factors = net_kf,
         .param_count = net_params, .nbytes = net_nbytes, .free = net_free,
-        .scale_layer = net_scale, .layer_in = net_lin, .layer_out = net_lout
+        .scale_layer = net_scale, .layer_in = net_lin, .layer_out = net_lout, .layer_k = net_lk
     };
     return h;
 }

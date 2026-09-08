@@ -12,13 +12,13 @@
  *   type-nn-dyn-adam  all three, Adam
  */
 
-#define SETTLE      48
+#define SETTLE      32
 #define FREEZE      24
 #define EMA_A       0.95
 #define STALL       0.97
-#define FLOOR_K     0.12
-#define FLOOR_W     0.20
-#define FLOOR_L     0.25
+#define FLOOR_K     0.10
+#define FLOOR_W     0.10
+#define FLOOR_L     0.06
 #define IDLE_B      0.12
 #define IDLE_W      0.04
 #define MAX_K       4
@@ -190,17 +190,22 @@ static void note_change(PNet *N)
     N->ema_ref = N->ema;
 }
 
-static void insert_frozen_id(PNet *N)
+static void insert_k1_before_tail(PNet *N)
 {
     if (N->depth >= LK_MAX_DEPTH) return;
-    PLayer tail = N->layer[0];
-    memset(&N->layer[0], 0, sizeof(PLayer));
-    N->layer[1] = tail;
-    player_alloc(&N->layer[0], tail.L.in, tail.L.in, TNN_K0);
-    lk_identity(&N->layer[0].L);
-    player_sync(&N->layer[0]);
-    N->layer[0].freeze_all = FREEZE;
-    N->depth = 2;
+    PLayer *tail = &N->layer[N->depth - 1];
+    size_t din = tail->L.in;
+    size_t H = din < 8 ? 8 : din;
+    if (H > 24) H = 24;
+    memmove(&N->layer[N->depth], tail, sizeof(PLayer));
+    memset(tail, 0, sizeof(PLayer));
+    player_alloc(tail, din, H, 1); /* new affine basis */
+    player_sync(tail);
+    lk_resize_in(&N->layer[N->depth].L, H);
+    player_sync(&N->layer[N->depth]);
+    N->layer[N->depth].freeze_col = FREEZE;
+    tail->freeze_all = FREEZE / 2;
+    N->depth++;
     note_change(N);
 }
 
@@ -246,6 +251,14 @@ static void try_shrink(PNet *N)
 
 static void try_grow(PNet *N)
 {
+    /* Layers first: a stalled residual means the current polynomial
+       cannot represent the target. Add a k=1 affine hidden before the tail. */
+    if ((N->flags & POL_L) && N->tick >= (unsigned)(SETTLE * 3) &&
+        stalled(N, FLOOR_L) && N->depth < 4 &&
+        N->layer[0].L.in >= 4) {
+        insert_k1_before_tail(N);
+        return;
+    }
     if ((N->flags & POL_K) && stalled(N, FLOOR_K)) {
         LKLayer *T = &N->layer[N->depth - 1].L;
         if (T->k < MAX_K) {
@@ -258,7 +271,7 @@ static void try_grow(PNet *N)
     }
     if (N->flags & POL_W) {
         if (N->depth == 1 && stalled(N, FLOOR_W)) {
-            insert_frozen_id(N);
+            insert_k1_before_tail(N);
             return;
         }
         if (N->depth >= 2 && stalled(N, FLOOR_W)) {
@@ -275,8 +288,6 @@ static void try_grow(PNet *N)
             }
         }
     }
-    if ((N->flags & POL_L) && N->depth == 1 && stalled(N, FLOOR_L))
-        insert_frozen_id(N);
 }
 
 static void net_init(void *c)
@@ -439,6 +450,12 @@ static size_t net_lout(void *c, size_t idx)
     return idx < N->depth ? N->layer[idx].L.out : 0;
 }
 
+static size_t net_lk(void *c, size_t idx)
+{
+    PNet *N = c;
+    return idx < N->depth ? N->layer[idx].L.k : 0;
+}
+
 static AltNet open_pol(const char *name, int flags, size_t in, size_t out)
 {
     PNet *N = (PNet *)calloc(1, sizeof(PNet));
@@ -453,7 +470,7 @@ static AltNet open_pol(const char *name, int flags, size_t in, size_t out)
         .remove_hidden = net_rem, .set_dynamic = net_dyn,
         .depth = net_depth, .or_factors = net_kf,
         .param_count = net_params, .nbytes = net_nbytes, .free = net_free,
-        .scale_layer = net_scale, .layer_in = net_lin, .layer_out = net_lout
+        .scale_layer = net_scale, .layer_in = net_lin, .layer_out = net_lout, .layer_k = net_lk
     };
     return h;
 }
@@ -468,5 +485,6 @@ AltNet type_nn_dyn_w_open(size_t in, size_t out)
 { return open_pol("type-nn-dyn-w", POL_W, in, out); }
 AltNet type_nn_dyn_l_open(size_t in, size_t out)
 { return open_pol("type-nn-dyn-l", POL_L, in, out); }
+
 AltNet type_nn_dyn_adam_open(size_t in, size_t out)
 { return open_pol("type-nn-dyn-adam", POL_K | POL_W | POL_L | POL_ADAM, in, out); }

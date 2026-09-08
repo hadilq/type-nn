@@ -288,6 +288,12 @@ static size_t stack_lout(void *ctx, size_t idx)
     if (idx >= s->depth) return 0;
     return s->ops->out(s->layer[idx]);
 }
+static size_t stack_lk(void *ctx, size_t idx)
+{
+    TStack *s = (TStack *)ctx;
+    if (idx >= s->depth) return 0;
+    return s->ops->k(s->layer[idx]);
+}
 
 static size_t stack_depth(void *ctx) { return ((TStack *)ctx)->depth; }
 
@@ -360,6 +366,7 @@ void tstack_bind(AltNet *dst, TStack *s)
     dst->scale_layer = stack_scale;
     dst->layer_in = stack_lin;
     dst->layer_out = stack_lout;
+    dst->layer_k = stack_lk;
 }
 
 void type_nn_alt_train(AltNet *a, double **X, double **Y,
@@ -413,6 +420,17 @@ extern AltNet type_nn_dyn_k_open(size_t, size_t);
 extern AltNet type_nn_dyn_w_open(size_t, size_t);
 extern AltNet type_nn_dyn_l_open(size_t, size_t);
 extern AltNet type_nn_dyn_adam_open(size_t, size_t);
+extern AltNet type_nn_proj_open(size_t, size_t);
+extern AltNet type_nn_proj_dyn_open(size_t, size_t);
+extern AltNet type_nn_proj2_open(size_t, size_t);
+extern AltNet type_nn_proj2_dyn_open(size_t, size_t);
+extern AltNet type_nn_bpdyn_open(size_t, size_t);
+extern AltNet type_nn_bpgap_open(size_t, size_t);
+extern AltNet type_nn_bpcurv_open(size_t, size_t);
+extern AltNet type_nn_bpcombo_open(size_t, size_t);
+extern AltNet type_nn_bpcube_open(size_t, size_t);
+extern AltNet type_nn_bpwide_open(size_t, size_t);
+extern AltNet type_nn_lin_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_arena_open,
@@ -434,12 +452,22 @@ static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_dyn_w_open,
     type_nn_dyn_l_open,
     type_nn_dyn_adam_open,
+    type_nn_proj_open,
+    type_nn_proj_dyn_open,
+    type_nn_proj2_open,
+    type_nn_proj2_dyn_open,
+    type_nn_bpdyn_open,
+    type_nn_bpgap_open,
+    type_nn_bpcurv_open,
+    type_nn_bpcombo_open,
+    type_nn_bpcube_open,
+    type_nn_bpwide_open,
 };
 static const char *const NAMES[] = {
     "type-nn-arena", "type-nn-soa", "type-nn-gemm", "type-nn-csr",
     "type-nn-hotcold", "type-nn-q8", "type-nn-tape", "type-nn-opt-q8",
     "type-nn-opt", "type-nn-bp", "type-nn-mom", "type-nn-adam",
-    "type-nn-bpgemm", "type-nn-dyn", "type-nn-dyn-sgd", "type-nn-dyn-k", "type-nn-dyn-w", "type-nn-dyn-l", "type-nn-dyn-adam",
+    "type-nn-bpgemm", "type-nn-dyn", "type-nn-dyn-sgd", "type-nn-dyn-k", "type-nn-dyn-w", "type-nn-dyn-l", "type-nn-dyn-adam", "type-nn-proj", "type-nn-proj-dyn", "type-nn-proj2", "type-nn-proj2-dyn", "type-nn-bpdyn", "type-nn-bpgap", "type-nn-bpcurv", "type-nn-bpcombo", "type-nn-bpcube", "type-nn-bpwide",
 };
 
 size_t type_nn_alt_count(void)
@@ -455,4 +483,45 @@ const char *type_nn_alt_name(size_t i)
 AltNet (*type_nn_alt_opener(size_t i))(size_t, size_t)
 {
     return i < type_nn_alt_count() ? OPENERS[i] : NULL;
+}
+
+
+void type_nn_alt_snap(const AltNet *a, TnnSnap *s)
+{
+    size_t i;
+    memset(s, 0, sizeof(*s));
+    if (!a || !a->depth) return;
+    s->depth = a->depth(a->ctx);
+    if (s->depth > TNN_SNAP_MAX) s->depth = TNN_SNAP_MAX;
+    for (i = 0; i < s->depth; i++) {
+        size_t out = 0, k = 2;
+        if (a->layer_out) out = a->layer_out(a->ctx, i);
+        else if (i + 1 == s->depth) out = a->out;
+        if (a->layer_k) k = a->layer_k(a->ctx, i);
+        else if (a->or_factors && i + 1 == s->depth) k = a->or_factors(a->ctx);
+        if (k < 1) k = 1;
+        s->n_and[i] = out;
+        s->n_or[i] = out * k;
+    }
+}
+
+void type_nn_alt_dyn_score(const TnnSnap *b, const TnnSnap *a,
+                           double *dyn_scale, int *dyn_depth)
+{
+    size_t n = b->depth > a->depth ? b->depth : a->depth;
+    double m = 0.0;
+    size_t i;
+    if (n > TNN_SNAP_MAX) n = TNN_SNAP_MAX;
+    for (i = 0; i < n; i++) {
+        long d_and = (long)(i < a->depth ? a->n_and[i] : 0) -
+                     (long)(i < b->depth ? b->n_and[i] : 0);
+        long d_or  = (long)(i < a->depth ? a->n_or[i]  : 0) -
+                     (long)(i < b->depth ? b->n_or[i]  : 0);
+        if (d_and < 0) d_and = -d_and;
+        if (d_or < 0) d_or = -d_or;
+        /* add and multiply sum-type and product-type size changes */
+        m += (double)d_or + (double)d_and + (double)d_or * (double)d_and;
+    }
+    if (dyn_scale) *dyn_scale = m;
+    if (dyn_depth) *dyn_depth = (int)a->depth - (int)b->depth;
 }

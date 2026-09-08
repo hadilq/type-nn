@@ -47,6 +47,9 @@ def emit(impl: str, task: str, train_s: float, infer_s: float, infer_n: int,
         "depth": None,
         "n": n,
         "acc": acc,
+        "dyn_scale": 0.0,
+        "dyn_depth": 0,
+        "dyn_params": 0,
     }))
 
 

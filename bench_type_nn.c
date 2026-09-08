@@ -93,19 +93,53 @@ static double mse(Network *net, double **X, double **Y, size_t n, size_t in, siz
     return acc / (double)n;
 }
 
+
+static void net_snap(const Network *net, size_t *depth,
+                     size_t *n_and, size_t *n_or)
+{
+    size_t d = 0;
+    for (Layer *L = net->head; L && d < 8; L = L->next, d++) {
+        size_t a = 0, o = 0;
+        for (AndNode *an = L->and_row; an; an = an->right) {
+            a++;
+            for (OrNode *orn = an->or_row; orn; orn = orn->right) o++;
+        }
+        n_and[d] = a;
+        n_or[d] = o;
+    }
+    *depth = d;
+}
+
+static double net_dyn_scale(size_t db, const size_t *ab, const size_t *ob,
+                            size_t da, const size_t *aa, const size_t *oa)
+{
+    size_t n = db > da ? db : da;
+    double m = 0.0;
+    for (size_t i = 0; i < n && i < 8; i++) {
+        long d_and = (long)(i < da ? aa[i] : 0) - (long)(i < db ? ab[i] : 0);
+        long d_or  = (long)(i < da ? oa[i] : 0) - (long)(i < db ? ob[i] : 0);
+        if (d_and < 0) d_and = -d_and;
+        if (d_or < 0) d_or = -d_or;
+        m += (double)d_or + (double)d_and + (double)d_or * (double)d_and;
+    }
+    return m;
+}
+
 static void emit(const char *task, double train_s, double infer_s,
                  size_t infer_n, long rss, long hwm,
                  size_t params, size_t nbytes, double final_mse, size_t depth,
-                 size_t n_samples, double acc)
+                 size_t n_samples, double acc, double dyn_scale, int dyn_depth, long dyn_params)
 {
     double us_per = infer_n ? (infer_s * 1e6 / (double)infer_n) : 0.0;
     printf(
         "{\"impl\":\"type-nn\",\"task\":\"%s\",\"train_s\":%.6f,"
         "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.3f,"
         "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
-        "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f}\n",
+        "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
+        "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld}\n",
         task, train_s, infer_s, infer_n, us_per,
-        rss, hwm, params, nbytes, final_mse, depth, n_samples, acc);
+        rss, hwm, params, nbytes, final_mse, depth, n_samples, acc,
+        dyn_scale, dyn_depth, dyn_params);
 }
 
 static void bench_xor(void)
@@ -122,9 +156,16 @@ static void bench_xor(void)
     double *X[4], *Y[4];
     for (int i = 0; i < 4; i++) { X[i] = Xd[i]; Y[i] = Yd[i]; }
 
+    size_t db = 0, da = 0, ab[8] = {0}, ob[8] = {0}, aa[8] = {0}, oa[8] = {0};
+    net_snap(net, &db, ab, ob);
+    size_t p0 = network_param_count(net);
     double t0 = wall_s();
     network_train(net, X, Y, 4, 400);
     double train_s = wall_s() - t0;
+    net_snap(net, &da, aa, oa);
+    double dyn_scale = net_dyn_scale(db, ab, ob, da, aa, oa);
+    int dyn_depth = (int)da - (int)db;
+    long dyn_params = (long)network_param_count(net) - (long)p0;
 
     const size_t reps = 20000;
     double pred[1];
@@ -135,7 +176,7 @@ static void bench_xor(void)
 
     emit("xor", train_s, infer_s, reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, 4, 2, 1), network_depth(net), 4, -1.0);
+         mse(net, X, Y, 4, 2, 1), network_depth(net), 4, -1.0, dyn_scale, dyn_depth, dyn_params);
     network_free(net);
 }
 
@@ -155,9 +196,16 @@ static void bench_quadratic(void)
     network_set_learning_rate(net, 0.04);
     network_init_weights(net);
 
+    size_t db = 0, da = 0, ab[8] = {0}, ob[8] = {0}, aa[8] = {0}, oa[8] = {0};
+    net_snap(net, &db, ab, ob);
+    size_t p0 = network_param_count(net);
     double t0 = wall_s();
     network_train(net, X, Y, N, 200);
     double train_s = wall_s() - t0;
+    net_snap(net, &da, aa, oa);
+    double dyn_scale = net_dyn_scale(db, ab, ob, da, aa, oa);
+    int dyn_depth = (int)da - (int)db;
+    long dyn_params = (long)network_param_count(net) - (long)p0;
 
     const size_t reps = 5000;
     double pred[1];
@@ -168,7 +216,7 @@ static void bench_quadratic(void)
 
     emit("quadratic", train_s, infer_s, reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, N, 2, 1), network_depth(net), N, -1.0);
+         mse(net, X, Y, N, 2, 1), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params);
     network_free(net);
     mat_free(X, N);
     mat_free(Y, N);
@@ -193,9 +241,16 @@ static void bench_mlp_scale(void)
     network_set_learning_rate(net, 0.01);
     network_init_weights(net);
 
+    size_t db = 0, da = 0, ab[8] = {0}, ob[8] = {0}, aa[8] = {0}, oa[8] = {0};
+    net_snap(net, &db, ab, ob);
+    size_t p0 = network_param_count(net);
     double t0 = wall_s();
     network_train(net, X, Y, N, 30);
     double train_s = wall_s() - t0;
+    net_snap(net, &da, aa, oa);
+    double dyn_scale = net_dyn_scale(db, ab, ob, da, aa, oa);
+    int dyn_depth = (int)da - (int)db;
+    long dyn_params = (long)network_param_count(net) - (long)p0;
 
     const size_t reps = 1000;
     double *pred = (double *)calloc(OUT, sizeof(double));
@@ -207,7 +262,7 @@ static void bench_mlp_scale(void)
 
     emit("mlp32x16x8", train_s, infer_s, reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, N, IN, OUT), network_depth(net), N, -1.0);
+         mse(net, X, Y, N, IN, OUT), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params);
     network_free(net);
     mat_free(X, N);
     mat_free(Y, N);
@@ -263,9 +318,16 @@ static int bench_real(const char *task, const char *file,
     network_set_learning_rate(net, lr);
     network_init_weights(net);
 
+    size_t db = 0, da = 0, ab[8] = {0}, ob[8] = {0}, aa[8] = {0}, oa[8] = {0};
+    net_snap(net, &db, ab, ob);
+    size_t p0 = network_param_count(net);
     double t0 = wall_s();
     network_train(net, ds.X, ds.Y, ds.n, epochs);
     double train_s = wall_s() - t0;
+    net_snap(net, &da, aa, oa);
+    double dyn_scale = net_dyn_scale(db, ab, ob, da, aa, oa);
+    int dyn_depth = (int)da - (int)db;
+    long dyn_params = (long)network_param_count(net) - (long)p0;
 
     double *pred = (double *)calloc(ds.out, sizeof(double));
     double t1 = wall_s();
@@ -278,7 +340,7 @@ static int bench_real(const char *task, const char *file,
     emit(task, train_s, infer_s, infer_reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
          mse(net, ds.X, ds.Y, ds.n, ds.in, ds.out),
-         network_depth(net), ds.n, acc);
+         network_depth(net), ds.n, acc, dyn_scale, dyn_depth, dyn_params);
     network_free(net);
     dataset_free(&ds);
     free(path);

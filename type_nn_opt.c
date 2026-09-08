@@ -357,6 +357,18 @@ static size_t optn_lout(void *c, size_t idx)
     return idx < N->depth ? N->layer[idx].out : 0;
 }
 
+
+static size_t net_lk(void *c, size_t idx)
+{
+    OptNet *N = c;
+    return idx < N->depth ? N->layer[idx].k : 0;
+}
+
+static size_t optn_lk(void *c, size_t idx)
+{
+    OptNet *N = c;
+    return idx < N->depth ? N->layer[idx].k : 0;
+}
 AltNet type_nn_opt_open(size_t in, size_t out)
 {
     OptNet *N = (OptNet *)calloc(1, sizeof(OptNet));
@@ -373,7 +385,7 @@ AltNet type_nn_opt_open(size_t in, size_t out)
         .remove_hidden = optn_remove, .set_dynamic = optn_dyn,
         .depth = optn_depth, .or_factors = optn_k,
         .param_count = optn_params, .nbytes = optn_nbytes, .free = optn_free,
-        .scale_layer = optn_scale, .layer_in = optn_lin, .layer_out = optn_lout,
+        .scale_layer = optn_scale, .layer_in = optn_lin, .layer_out = optn_lout, .layer_k = optn_lk,
     };
     return h;
 }

@@ -44,7 +44,20 @@ struct AltNet {
     void   (*scale_layer)(void *ctx, size_t idx, size_t in, size_t out);
     size_t (*layer_in)(void *ctx, size_t idx);
     size_t (*layer_out)(void *ctx, size_t idx);
+    size_t (*layer_k)(void *ctx, size_t idx);
 };
+
+#define TNN_SNAP_MAX 8
+typedef struct {
+    size_t depth;
+    size_t n_and[TNN_SNAP_MAX]; /* product-type count (And / out) */
+    size_t n_or[TNN_SNAP_MAX];  /* sum-type count     (Or = out*k) */
+} TnnSnap;
+
+void   type_nn_alt_snap(const AltNet *a, TnnSnap *s);
+void   type_nn_alt_dyn_score(const TnnSnap *before, const TnnSnap *after,
+                             double *dyn_scale, int *dyn_depth);
+
 
 AltNet type_nn_arena_open(size_t in, size_t out);
 AltNet type_nn_soa_open(size_t in, size_t out);
@@ -62,6 +75,17 @@ AltNet type_nn_bpgemm_open(size_t in, size_t out);
 AltNet type_nn_dyn_open(size_t in, size_t out);
 AltNet type_nn_dyn_sgd_open(size_t in, size_t out);
 AltNet type_nn_dyn_adam_open(size_t in, size_t out);
+AltNet type_nn_proj_open(size_t in, size_t out);
+AltNet type_nn_proj_dyn_open(size_t in, size_t out);
+AltNet type_nn_proj2_open(size_t in, size_t out);
+AltNet type_nn_proj2_dyn_open(size_t in, size_t out);
+AltNet type_nn_bpdyn_open(size_t in, size_t out);
+AltNet type_nn_bpgap_open(size_t in, size_t out);
+AltNet type_nn_bpcurv_open(size_t in, size_t out);
+AltNet type_nn_bpcombo_open(size_t in, size_t out);
+AltNet type_nn_bpcube_open(size_t in, size_t out);
+AltNet type_nn_bpwide_open(size_t in, size_t out);
+AltNet type_nn_lin_open(size_t in, size_t out);
 AltNet type_nn_dyn_l_open(size_t in, size_t out);
 AltNet type_nn_dyn_w_open(size_t in, size_t out);
 AltNet type_nn_dyn_k_open(size_t in, size_t out);

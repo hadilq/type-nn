@@ -16,7 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c type_nn_bpgemm.c type_nn_dyn.c"
+ALTS="type_nn_stack.c type_nn_soa.c type_nn_gemm.c type_nn_arena.c type_nn_csr.c type_nn_hotcold.c type_nn_q8.c type_nn_tape.c type_nn_opt_q8.c type_nn_opt.c type_nn_bp.c type_nn_mom.c type_nn_adam.c type_nn_bpgemm.c type_nn_dyn.c type_nn_proj.c type_nn_bpdyn.c type_nn_bpest.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
@@ -50,8 +50,8 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_ben
         pass
 
 print()
-print("task         impl               params   nbytes  us/infer   train_s       mse      acc")
-print("-" * 96)
+print("task         impl               params   nbytes  us/infer   train_s       mse      acc  dscale ddepth dparams")
+print("-" * 108)
 by = collections.defaultdict(list)
 for r in rows:
     by[r["task"]].append(r)
@@ -70,10 +70,15 @@ for task in order:
         acc_s = "   n/a" if acc is None or acc < 0 else f"{acc:6.3f}"
         print(f"{r['task']:<12} {r['impl']:<18} {r['params']:7d}  {r['nbytes']:7d}  "
               f"{r['us_per_infer']:8.3f}  {r['train_s']:8.4f}  "
-              f"{r['mse']:.6f}  {acc_s}")
+              f"{r['mse']:.6f}  {acc_s}  "
+              f"{r.get('dyn_scale', 0):6.1f} {r.get('dyn_depth', 0):6d} {r.get('dyn_params', 0):7d}")
     if block:
         print()
 print("Notes:")
+print("  • dscale = Σ_layers (|ΔOr|+|ΔAnd|+|ΔOr|·|ΔAnd|) after train.")
+print("    Or = sum-type count (out·k), And = product-type count (out).")
+print("  • ddepth = final depth − start depth (layers added/removed).")
+print("  • dparams = param_count after train − param_count at init.")
 print("  • type-nn         = original linked lists (type_nn.c frozen).")
 print("  • type-nn-arena   = And/Or nodes in a slab, integer next.")
 print("  • type-nn-soa     = SoA W[or][in].")

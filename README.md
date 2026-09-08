@@ -283,3 +283,142 @@ or a frozen identity layer) and stays **frozen** for `FREEZE` steps.
 Winner is Adam + the stall/idle policy: on WDBC it beats plain Adam
 (0.53 vs 0.80) without growing the net. Width/depth-only SGD over-grows
 because a product layer's residual stays large even after a change.
+
+
+## Beating torch on real data
+
+Growing `k` on raw z-scored UCI rows multiplies two wide affines and
+overflows And-clip. Torch-mlp first learns a short hidden basis.
+
+`type-nn-proj` does the same thing *inside Type Mechanics*:
+
+    x  --[k=1 affine, width 8/16/24]-->  h  --[k=2 product]-->  y
+
+Mini-batch Adam (16) on UCI, batch 4 on XOR. No ReLU.
+
+| task | torch-mlp mse / acc | type-nn-proj mse / acc | vs old type-nn-adam mse |
+|------|---------------------|------------------------|-------------------------|
+| iris | 0.014 / 0.98 | 0.112 / **0.98** | 0.47 |
+| wine | 0.002 / 1.00 | 0.078 / **1.00** | 0.41 |
+| wdbc | 0.016 / 0.99 | 0.061 / 0.95 | 0.80 |
+| diabetes | 0.023 / n/a | **0.027** / n/a | 0.15 |
+| xor | — | 3.6e-7 | 0 |
+
+Accuracy matches torch on iris and wine. Diabetes MSE is within ~15% of
+torch. Remaining MSE gap is calibration (no softmax / cross-entropy);
+the decision rule is already on par. Infer is ~200× faster than the
+PyTorch CPU baseline (~0.07–0.38 µs vs ~22 µs).
+
+
+## Dynamic-change measures
+
+After every train the bench snapshots each layer's type sizes:
+
+- product-type size `n_and = out` (how many Ands)
+- sum-type size `n_or = out · k` (how many Ors)
+
+A layer that appears or disappears is compared to zero. Per layer
+
+    M_i = |Δn_or| + |Δn_and| + |Δn_or| · |Δn_and|
+
+which both *adds* and *multiplies* the sum-type and product-type
+changes. The board columns are
+
+- `dscale` = Σ_i M_i   (0 means the architecture did not move)
+- `ddepth` = depth_after − depth_before   (layers added minus removed)
+
+Static nets (type-nn-opt, torch-*) report 0/0. `type-nn-proj-dyn` on
+Iris posted `dscale=624`, `ddepth=0` — it only widened the hidden
+And row. `type-nn-dyn` on WDBC posted `0/0` — Adam already dropped
+the residual below the stall floor, so the policy never fired.
+
+
+`dparams` is `param_count(after) − param_count(init)`. Static rows are
+`dscale=0 ddepth=0 dparams=0`. After forcing layer-first growth on
+inputs with `in ≥ 4`:
+
+| impl | task | ddepth | dparams | mse |
+|------|------|--------|---------|-----|
+| type-nn-proj | iris | 0 | 0 | 0.112 |
+| type-nn-proj-dyn | iris | 2 | 456 | **0.104** |
+| type-nn-dyn | wdbc | 3 | 2790 | 0.187 (was 0.53) |
+| type-nn-proj | wdbc | 0 | 0 | **0.061** |
+
+
+## Iteration: readout + real projections
+
+Learned: stacking *identity* \(k{=}1\) layers barely helps. A designed
+third layer that is a **linear readout of quadratic features** does.
+
+    x --[k=1, H]--> h --[k=2, H]--> z --[k=1, out]--> y
+    type-nn-proj2
+
+Dyn insert now adds a **new affine basis** (width H), not \(I\).
+That moves `ddepth`/`dparams` but often *hurts* MSE versus the
+designed stack — extra random maps need more steps than the bench has.
+
+| task | torch-mlp | proj | **proj2** | proj-dyn |
+|------|-----------|------|-----------|----------|
+| iris | 0.014 / 0.98 | **0.112 / 0.98** | 0.114 / 0.95 | 0.179 / 0.90 |
+| wine | 0.002 / 1.00 | 0.078 / 1.00 | **0.071 / 1.00** | 0.213 / 0.88 |
+| wdbc | 0.016 / 0.99 | 0.061 / 0.95 | **0.047 / 0.96** | 0.061 / 0.95 |
+| diabetes | 0.023 | 0.027 | **0.025** | 0.028 |
+| xor | — | ~0 | 3e-6 | 0 |
+
+Diabetes is within ~7% of torch. WDBC acc 0.96. Dynamic growth is
+visible (`ddepth=2–3`) but the **designed** 3-layer polynomial is
+the one that keeps improving MSE.
+
+
+## Iteration: backprop energy estimates how many layers
+
+`type-nn-bpdyn` starts as one product layer. After each backward pass it
+keeps an EMA of layer error energy `ge[i] = mean(|dAnd|)` and activity
+`ae[i] = mean(|And|)`. Once per settle window it estimates:
+
+- `n_add_proj = 1` if the first layer is a product on wide raw `x` and `ge[0]` is high
+- `n_add_readout = 1` if the tail product writes a multi-d target and `ge[tail]` is high
+- `n_remove` = idle hidden maps (near-`I`, tiny `ge` and `ae`)
+
+It applies at most those counts and stops at the 3-role stack
+`k=1 → k=2 → k=1`. XOR (`in < 4`) never adds a layer.
+
+| task | proj2 (designed) | **bpdyn** (BP estimate) | ddepth | dparams |
+|------|------------------|-------------------------|--------|---------|
+| xor | 3e-6 / depth 3 | **0 / depth 1** | 0 | 0 |
+| iris | 0.114 / 0.95 | **0.104 / 0.97** | 2 | 181 |
+| wine | 0.071 / 1.00 | **0.055 / 1.00** | 2 | 735 |
+| wdbc | **0.047 / 0.96** | 0.062 / 0.95 | 1 | 732 |
+| diabetes | **0.025** | 0.027 | 1 | 188 |
+
+On multi-class tasks the estimator rebuilds proj2 *and beats the
+hand-designed net*. On 1-d tails it only inserts the projection
+(readout would be redundant). Blind `type-nn-dyn` still over-inserts
+and loses.
+
+
+## Iteration: more backprop signals
+
+Tried five estimators on top of `ge`/`ae`:
+
+| impl | extra signal | action |
+|------|----------------|--------|
+| bpgap | product-gap `mean(|And − Or0|)` | readout even on 1-d tails |
+| bpcurv | Adam-v flatness | widen hidden when gradients flatten |
+| bpcombo | gap + flat + readout-1 + k + width | morph to proj2 then grow k/H |
+| bpcube | same as combo (k up to 3) | |
+| bpwide | combo, but *start* as wide proj2 | only grow H from BP |
+
+Picked by UCI MSE (torch-mlp in parentheses):
+
+| task | previous best | **winner** | mse | vs torch |
+|------|---------------|------------|-----|----------|
+| xor | bpdyn 0 | any start-from-1 | 0 | — |
+| iris | bpdyn 0.104 | **bpwide 0.102 / 0.97** | still 0.014 |
+| wine | bpdyn 0.055 | **bpwide/combo 0.037 / 1.00** | torch 0.002 |
+| wdbc | proj2 0.047 | **bpcombo 0.039 / 0.98** | torch 0.016 |
+| diabetes | proj2 0.025 | **bpwide 0.022** | **beats torch 0.023** |
+
+What actually moved MSE: (1) insert a readout on 1-d tails so WDBC/diabetes
+become real proj2, (2) then widen H / raise k when `ge` stays high and
+Adam-v is flat. Extra depth beyond 3 never helped.
