@@ -4,6 +4,7 @@
 #define _USE_MATH_DEFINES
 
 #include <stddef.h>
+#include <stdbool.h>
 
 /* ─────────────────────────────────────────────
    BiasNode
@@ -14,50 +15,50 @@ typedef struct BiasNode {
 } BiasNode;
 
 /* ─────────────────────────────────────────────
-   WeightNode
+   WeightNode  – sparse weight list, sorted by right_index
    ───────────────────────────────────────────── */
 typedef struct WeightNode {
     double value;             /* forward-pass value    */
     double grad;              /* ∂L/∂value (backprop)  */
-    double quantization;      /* quantization level    */
-    size_t right_index;       /* sums up with right    */
-    struct WeightNode *right; /* right element         */
+    double quantization;      /* snap / prune threshold */
+    size_t right_index;       /* feature index         */
+    struct WeightNode *right; /* next weight           */
 } WeightNode;
 
 /* ─────────────────────────────────────────────
-   OrNode
+   OrNode  – linear unit: bias + Σ w_i x_i
    ───────────────────────────────────────────── */
 typedef struct OrNode {
     double value;              /* forward-pass value              */
     double grad;               /* ∂L/∂value (backprop)            */
     double quantization;       /* quantization level              */
-    double accum;            /* accumulated and terms except one  */
-    struct WeightNode *weight; /* right element                   */
-    struct BiasNode bias;      /* right element                   */
-    size_t right_index;        /* sums up with right              */
-    struct OrNode *right;      /* right element                   */
+    double accum;              /* Π of sibling Or values          */
+    struct WeightNode *weight; /* sparse weights                  */
+    struct BiasNode bias;
+    size_t right_index;
+    struct OrNode *right;
 } OrNode;
 
 /* ─────────────────────────────────────────────
-   AndNode
+   AndNode  – product of OrNodes (one output unit)
    ───────────────────────────────────────────── */
 typedef struct AndNode {
-    double value;          /* forward-pass value                */
-    double grad;           /* ∂L/∂value (backprop)              */
-    double quantization;   /* quantization level                */
-    struct OrNode *or_row; /* right element                     */
-    size_t right_index;    /* sums up with right                */
-    struct AndNode *right; /* right element                     */
+    double value;
+    double grad;
+    double quantization;
+    struct OrNode *or_row;
+    size_t right_index;
+    struct AndNode *right;
 } AndNode;
 
 /* ─────────────────────────────────────────────
-   InOutNode
+   InOutNode  – sparse activation / gradient list
    ───────────────────────────────────────────── */
 typedef struct InOutNode {
-    double value;            /* forward-pass value    */
-    double grad;             /* ∂L/∂value (backprop)  */
-    size_t right_index;      /* sums up with right    */
-    struct InOutNode *right; /* right element         */
+    double value;
+    double grad;
+    size_t right_index;
+    struct InOutNode *right;
 } InOutNode;
 
 /* ─────────────────────────────────────────────
@@ -66,10 +67,10 @@ typedef struct InOutNode {
 typedef struct Layer {
     size_t       in_size;
     size_t       out_size;
-    AndNode      *and_row; /* and row           */
-    InOutNode    *in;      /* in                */
-    InOutNode    *out;     /* out               */
-    InOutNode    *din;     /* ∂L/∂(prev layer a)    */
+    AndNode      *and_row;
+    InOutNode    *in;
+    InOutNode    *out;
+    InOutNode    *din;
     struct Layer *next;
     struct Layer *prev;
 } Layer;
@@ -80,32 +81,57 @@ typedef struct Layer {
 typedef struct {
     size_t in_size;
     size_t out_size;
-    Layer  *head;       /* first layer           */
-    Layer  *tail;       /* last  layer           */
+    Layer  *head;
+    Layer  *tail;
     size_t  depth;
+    double  lr;
+    int     dynamic;     /* enable grow / shrink / insert / drop */
+    size_t  max_depth;
+    size_t  max_or;
+    double  quantization;
 } Network;
 
-/* ── AndNode helpers ── */
-void    and_print(const AndNode *node, const char *label);
+/* ── print helpers ── */
+void and_print(const AndNode *node, const char *label);
+void in_out_print(const InOutNode *node, const char *label);
+void weight_print(const WeightNode *node, const char *label);
+void or_print(const OrNode *node, const char *label);
 
 /* ── Network lifecycle ── */
 Network *network_create(size_t in, size_t out);
 void     network_init_weights(Network *net);
-void     network_predict(Network *net, double *x, size_t in, double *out_buf, size_t out);
 void     network_free(Network *net);
+void     network_add_layer(Network *net, size_t in, size_t out);
+void     network_set_learning_rate(Network *net, double lr);
+void     network_set_dynamic(Network *net, int enabled);
+size_t   network_depth(const Network *net);
+
+/* Insert an identity hidden layer in front of `at` (NULL = before tail). */
+Layer   *network_insert_identity(Network *net, Layer *at);
+/* Remove a hidden layer. Returns 0 on success, -1 if refused. */
+int      network_remove_layer(Network *net, Layer *node);
+
+/* Grow / shrink the sparse structure of a layer to match sizes. */
+void     layer_align_inputs(Layer *l, size_t in_size);
+void     layer_set_outputs(Layer *l, size_t out_size);
 
 /* ── Forward / inference ── */
-InOutNode  *network_forward(Network *net, const InOutNode *input, size_t input_size);
+InOutNode *network_forward(Network *net, const InOutNode *input, size_t input_size);
+void       network_predict(Network *net, double *x, size_t in, double *out_buf, size_t out);
 
 /* ── Backward / training ── */
 double   network_loss_mse(const InOutNode *pred, const InOutNode *target, InOutNode *dloss);
 void     network_backward(Network *net, const InOutNode *dloss);
 
-/* ── Convenience ── */
 void     network_train(Network *net,
                        double **X, double **Y,
-                       size_t n_samples, 
+                       size_t n_samples,
                        size_t epochs);
-void     network_predict(Network *net, double *x, size_t in, double *out_buf, size_t out);
+
+/* Count helpers (useful for tests). */
+size_t inout_count(const InOutNode *n);
+size_t weight_count(const WeightNode *n);
+size_t or_count(const OrNode *n);
+size_t and_count(const AndNode *n);
 
 #endif /* NN_H */

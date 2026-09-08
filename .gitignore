@@ -1,0 +1,5 @@
+.direnv/
+test_vortex
+test_vortex_asan
+vortex
+
