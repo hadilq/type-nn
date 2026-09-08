@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""CPU PyTorch baselines for the Vortex bench suite.
+"""CPU PyTorch baselines for the type-nn bench suite.
 
 Two implementations per task:
 
   torch-mlp   – the usual production style: Linear + ReLU + Adam
   torch-poly  – Linear on polynomial features (degree 2).  This is the
-                closest *functional* cousin of Vortex (rank-2 polynomial).
+                closest *functional* cousin of type-nn (rank-2 polynomial).
 
 Everything runs on CPU with one thread so the comparison is against a
 strong library, not against a GPU kernel launcher.
@@ -30,7 +30,7 @@ def rss_kb() -> int:
 
 
 def emit(impl: str, task: str, train_s: float, infer_s: float, infer_n: int,
-         params: int, mse: float) -> None:
+         params: int, mse: float, n: int = 0, acc: float = -1.0) -> None:
     us = (infer_s * 1e6 / infer_n) if infer_n else 0.0
     print(json.dumps({
         "impl": impl,
@@ -42,9 +42,11 @@ def emit(impl: str, task: str, train_s: float, infer_s: float, infer_n: int,
         "rss_kb": rss_kb(),
         "hwm_kb": rss_kb(),
         "params": params,
-        "nbytes": params * 4,  # fp32 weights only; excludes allocator slop
+        "nbytes": params * 4,
         "mse": float(mse),
         "depth": None,
+        "n": n,
+        "acc": acc,
     }))
 
 
@@ -183,22 +185,159 @@ def bench_mlp_scale(kind: str) -> None:
     emit(impl, "mlp32x16x8", train_s, infer_s, reps, nparams(mod), final_mse(mod, X, Y))
 
 
+
+import os
+
+def find_data(name: str) -> str | None:
+    dirs = []
+    env = os.environ.get("TYPE_NN_DATA")
+    if env:
+        dirs.append(env)
+    dirs += ["data", "./data", "/tmp/type-nn-data", "/usr/share/type-nn"]
+    for d in dirs:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def standardize(X: torch.Tensor) -> torch.Tensor:
+    mean = X.mean(dim=0, keepdim=True)
+    std = X.std(dim=0, keepdim=True).clamp_min(1e-8)
+    return (X - mean) / std
+
+
+def minmax(Y: torch.Tensor) -> torch.Tensor:
+    lo = Y.min(dim=0, keepdim=True).values
+    hi = Y.max(dim=0, keepdim=True).values
+    return (Y - lo) / (hi - lo).clamp_min(1e-8)
+
+
+def accuracy(mod: nn.Module, X: torch.Tensor, Y: torch.Tensor) -> float:
+    mod.eval()
+    with torch.no_grad():
+        pred = mod(X)
+        if Y.shape[1] == 1:
+            return float(((pred >= 0.5) == (Y >= 0.5)).float().mean())
+        return float((pred.argmax(1) == Y.argmax(1)).float().mean())
+
+
+def load_iris(path: str):
+    xs, ys = [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            xs.append([float(v) for v in parts[:4]])
+            lab = parts[4]
+            k = 1 if "versicolor" in lab else 2 if "virginica" in lab else 0
+            ys.append([1.0 if i == k else 0.0 for i in range(3)])
+    X = standardize(torch.tensor(xs, dtype=torch.float32))
+    Y = torch.tensor(ys, dtype=torch.float32)
+    return X, Y
+
+
+def load_wine(path: str):
+    xs, ys = [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            cls = int(float(parts[0])) - 1
+            xs.append([float(v) for v in parts[1:14]])
+            ys.append([1.0 if i == cls else 0.0 for i in range(3)])
+    return standardize(torch.tensor(xs)), torch.tensor(ys)
+
+
+def load_wdbc(path: str):
+    xs, ys = [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            lab = 1.0 if parts[1] in ("M", "m") else 0.0
+            xs.append([float(v) for v in parts[2:32]])
+            ys.append([lab])
+    return standardize(torch.tensor(xs)), torch.tensor(ys)
+
+
+def load_diabetes(path: str):
+    xs, ys = [], []
+    with open(path) as f:
+        header = f.readline()
+        _ = header
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.replace(",", " ").split()
+            if len(parts) < 11:
+                continue
+            vals = [float(v) for v in parts[:11]]
+            xs.append(vals[:10])
+            ys.append([vals[10]])
+    X = standardize(torch.tensor(xs))
+    Y = minmax(torch.tensor(ys))
+    return X, Y
+
+
+def bench_real(kind: str, task: str, filename: str, loader, widths, epochs, lr, reps):
+    path = find_data(filename)
+    if path is None:
+        print(f"skip {task}: {filename} not found", flush=True)
+        return
+    X, Y = loader(path)
+    in_dim, out_dim = X.shape[1], Y.shape[1]
+    if kind == "mlp":
+        hid = widths[0]
+        mod = MLP([in_dim, hid, out_dim])
+        impl = "torch-mlp"
+    else:
+        mod = PolyLinear(in_dim, out_dim)
+        impl = "torch-poly"
+    train_s = fit_sgd(mod, X, Y, epochs, lr)
+    infer_s = infer_loop(mod, X, reps)
+    acc = accuracy(mod, X, Y) if task != "diabetes" else -1.0
+    emit(impl, task, train_s, infer_s, reps, nparams(mod), final_mse(mod, X, Y),
+         n=X.shape[0], acc=acc)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("task", nargs="?", default="all",
-                   choices=["all", "xor", "quadratic", "mlp32x16x8"])
+                   choices=["all", "xor", "quadratic", "mlp32x16x8",
+                            "iris", "wine", "wdbc", "diabetes", "real"])
     p.add_argument("--kind", default="both", choices=["mlp", "poly", "both"])
     args = p.parse_args()
     kinds = ["mlp", "poly"] if args.kind == "both" else [args.kind]
-    tasks = {
+    synth = {
         "xor": bench_xor,
         "quadratic": bench_quadratic,
         "mlp32x16x8": bench_mlp_scale,
     }
-    run = tasks if args.task == "all" else {args.task: tasks[args.task]}
+    real = [
+        ("iris", "iris.data", load_iris, [8], 250, 0.05, 2000),
+        ("wine", "wine.data", load_wine, [16], 200, 0.03, 2000),
+        ("wdbc", "wdbc.data", load_wdbc, [16], 80, 0.02, 1000),
+        ("diabetes", "diabetes.tab.txt", load_diabetes, [16], 150, 0.02, 2000),
+    ]
+    want_synth = args.task in ("all", "xor", "quadratic", "mlp32x16x8")
+    want_real = args.task in ("all", "real", "iris", "wine", "wdbc", "diabetes")
     for kind in kinds:
-        for fn in run.values():
-            fn(kind)
+        if want_synth:
+            run = synth if args.task == "all" else {args.task: synth[args.task]} if args.task in synth else {}
+            for fn in run.values():
+                fn(kind)
+        if want_real:
+            for task, fnm, loader, widths, epochs, lr, reps in real:
+                if args.task in ("all", "real", task):
+                    bench_real(kind, task, fnm, loader, widths, epochs, lr, reps)
 
 
 if __name__ == "__main__":

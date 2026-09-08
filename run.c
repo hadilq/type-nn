@@ -5,7 +5,7 @@
  * Demo 2: sin(x) regression
  * Demo 3: inspect the linked structure + dynamic scaling
  */
-#include "vortex.h"
+#include "type_nn.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

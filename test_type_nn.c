@@ -1,9 +1,9 @@
 /*
- * test_vortex.c – unit + scenario tests for the dynamic AND-OR network.
+ * test_type_nn.c – unit + scenario tests for the dynamic AND-OR network.
  *
  * Exit status is the number of failed assertions (0 = all passed).
  */
-#include "vortex.h"
+#include "type_nn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -931,7 +931,7 @@ static void test_predict_does_not_change_depth(void)
 int main(void)
 {
     printf("╔══════════════════════════════════════════════╗\n");
-    printf("║          Vortex dynamic-NN test suite        ║\n");
+    printf("║          type-nn dynamic-NN test suite        ║\n");
     printf("╚══════════════════════════════════════════════╝\n");
 
     test_forward_known();

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run Vortex and (if available) PyTorch benches and print a side-by-side table.
+# Run type-nn and (if available) PyTorch benches; print a comparison table.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -8,11 +8,19 @@ CC="${CC:-gcc}"
 CFLAGS="${CFLAGS:--std=c11 -O2 -Wall -Wextra -I.}"
 TASK="${1:-all}"
 
-echo "== building bench_vortex =="
-$CC $CFLAGS -o bench_vortex bench_vortex.c vortex.c -lm
+if [ -z "${TYPE_NN_DATA:-}" ]; then
+  if [ -d "$ROOT/data" ] && [ -f "$ROOT/data/iris.data" ]; then
+    export TYPE_NN_DATA="$ROOT/data"
+  elif [ -d /tmp/type-nn-data ] && [ -f /tmp/type-nn-data/iris.data ]; then
+    export TYPE_NN_DATA=/tmp/type-nn-data
+  fi
+fi
 
-echo "== vortex (C, linked-list AND-OR) =="
-./bench_vortex "$TASK" | tee /tmp/vortex_bench.jsonl
+echo "== building bench_type_nn =="
+$CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
+
+echo "== type-nn (C, linked-list AND-OR)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
+./bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
 
 : > /tmp/torch_bench.jsonl
 if python3 -c "import torch" >/dev/null 2>&1; then
@@ -25,7 +33,7 @@ fi
 python3 - << 'PY'
 import json, collections
 rows = []
-for path in ("/tmp/vortex_bench.jsonl", "/tmp/torch_bench.jsonl"):
+for path in ("/tmp/type_nn_bench.jsonl", "/tmp/torch_bench.jsonl"):
     try:
         with open(path) as f:
             for line in f:
@@ -36,21 +44,26 @@ for path in ("/tmp/vortex_bench.jsonl", "/tmp/torch_bench.jsonl"):
         pass
 
 print()
-print("task         impl         train_s   us/infer    rss_kb   params       mse")
-print("-" * 78)
+print("task         impl         train_s   us/infer    rss_kb   params       mse      acc")
+print("-" * 88)
 by = collections.defaultdict(list)
 for r in rows:
     by[r["task"]].append(r)
-for task in ("xor", "quadratic", "mlp32x16x8"):
+order = ("xor", "quadratic", "mlp32x16x8", "iris", "wine", "wdbc", "diabetes")
+for task in order:
     for r in by.get(task, []):
+        acc = r.get("acc", -1)
+        acc_s = "   n/a" if acc is None or acc < 0 else f"{acc:6.3f}"
         print(f"{r['task']:<12} {r['impl']:<12} {r['train_s']:8.4f}  "
               f"{r['us_per_infer']:8.3f}  {r['rss_kb']:8d}  {r['params']:7d}  "
-              f"{r['mse']:.6f}")
-    print()
+              f"{r['mse']:.6f}  {acc_s}")
+    if task in by:
+        print()
 print("Notes:")
-print("  • torch-mlp  = Linear+ReLU + Adam — the production default.")
-print("  • torch-poly = Linear on explicit degree-2 features (same class as a 2-OR Vortex layer).")
-print("  • Vortex rss is the C process; PyTorch rss includes the interpreter + MKL/OpenMP.")
-print("  • Inference is one sample at a time on CPU, 1 thread — matching Vortex's API.")
-print("  • On wide dense layers PyTorch's GEMM wins at train time; Vortex wins on tiny polynomial tasks.")
+print("  • type-nn     = product of affine units (Type Mechanics AND/OR).")
+print("  • torch-mlp   = Linear+ReLU + Adam — the production default.")
+print("  • torch-poly  = Linear on explicit degree-2 features.")
+print("  • iris/wine/wdbc/diabetes are fetched by flake.nix (or `make data`).")
+print("  • acc is argmax / 0.5-threshold train accuracy; n/a for regression.")
+print("  • PyTorch rss includes the interpreter + MKL; type-nn rss is the C process.")
 PY

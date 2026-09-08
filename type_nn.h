@@ -1,5 +1,5 @@
-#ifndef NN_H
-#define NN_H
+#ifndef TYPE_NN_H
+#define TYPE_NN_H
 
 #define _USE_MATH_DEFINES
 
@@ -138,4 +138,4 @@ size_t and_count(const AndNode *n);
 size_t network_param_count(const Network *net);
 size_t network_nbytes(const Network *net);
 
-#endif /* NN_H */
+#endif /* TYPE_NN_H */

@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include "vortex.h"
+#include "type_nn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +10,7 @@
 #include <assert.h>
 #include <time.h>
 
-#ifdef VORTEX_DEBUG
+#ifdef TYPE_NN_DEBUG
 #define DBG(...) printf(__VA_ARGS__)
 #else
 #define DBG(...) ((void)0)

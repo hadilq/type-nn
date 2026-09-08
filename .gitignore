@@ -1,6 +1,7 @@
 .direnv/
-test_vortex
-test_vortex_asan
+test_type_nn
+test_type_nn_asan
 vortex
-bench_vortex
+bench_type_nn
+data/*.data
 
