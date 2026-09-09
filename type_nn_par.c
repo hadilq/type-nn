@@ -275,7 +275,7 @@ static void drop_dead_or(PNet *N)
 {
     for (size_t i = 0; i < N->depth; i++) {
         LKLayer *L = &N->layer[i].L;
-        if (L->k < 2) continue;
+        if (L->k <= 2) continue; /* never drop the last product factor */
         /* drop last Or of each And if its W is tiny */
         int any = 0;
         for (size_t o = 0; o < L->out; o++) {
@@ -302,6 +302,7 @@ static void grow_h_if_needed(PNet *N)
     if (P->ge < 0.08) return;
     {
         size_t cap = (N->par & PAR_A) ? 8 : 16;
+        if (P->L.in >= 20 && cap < 12) cap = 12;
         if (P->L.out >= cap) return;
     }
     size_t nout = P->L.out + 2;
@@ -540,4 +541,5 @@ AltNet type_nn_pADK_open(size_t in, size_t out) { return par_open("type-nn-pADK"
 AltNet type_nn_pAEK_open(size_t in, size_t out) { return par_open("type-nn-pAEK", PAR_A|PAR_E|PAR_K, in, out); }
 AltNet type_nn_pDEK_open(size_t in, size_t out) { return par_open("type-nn-pDEK", PAR_D|PAR_E|PAR_K, in, out); }
 AltNet type_nn_pADEK_open(size_t in, size_t out) { return par_open("type-nn-pADEK", PAR_A|PAR_D|PAR_E|PAR_K, in, out); }
+AltNet type_nn_win_open(size_t in, size_t out) { return par_open("type-nn-win", PAR_A|PAR_D|PAR_E|PAR_K, in, out); }
 

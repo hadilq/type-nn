@@ -424,6 +424,7 @@ extern AltNet type_nn_pADK_open(size_t, size_t);
 extern AltNet type_nn_pAEK_open(size_t, size_t);
 extern AltNet type_nn_pDEK_open(size_t, size_t);
 extern AltNet type_nn_pADEK_open(size_t, size_t);
+extern AltNet type_nn_win_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_opt_open,
@@ -445,9 +446,10 @@ static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_pAEK_open,
     type_nn_pDEK_open,
     type_nn_pADEK_open,
+    type_nn_win_open,
 };
 static const char *const NAMES[] = {
-    "type-nn-opt", "type-nn-bpsite", "type-nn-static", "type-nn-over", "type-nn-pA", "type-nn-pD", "type-nn-pE", "type-nn-pK", "type-nn-pAD", "type-nn-pAE", "type-nn-pAK", "type-nn-pDE", "type-nn-pDK", "type-nn-pEK", "type-nn-pADE", "type-nn-pADK", "type-nn-pAEK", "type-nn-pDEK", "type-nn-pADEK",
+    "type-nn-opt", "type-nn-bpsite", "type-nn-static", "type-nn-over", "type-nn-pA", "type-nn-pD", "type-nn-pE", "type-nn-pK", "type-nn-pAD", "type-nn-pAE", "type-nn-pAK", "type-nn-pDE", "type-nn-pDK", "type-nn-pEK", "type-nn-pADE", "type-nn-pADK", "type-nn-pAEK", "type-nn-pDEK", "type-nn-pADEK", "type-nn-win",
 };
 
 size_t type_nn_alt_count(void)

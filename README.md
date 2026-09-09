@@ -941,3 +941,25 @@ No single combo wins every file. Closest:
 - **pDK / pADK** — smallest that stays accurate on WDBC/iono (30–79p), wine hold 0.963
 - **pEK / pAEK** — wine hold **1.00** at 66p; iris train acc suffers
 - **pDEK** — tiniest wine 48p / hold 0.981
+
+
+## Holdout, ladd/ldrop, and `type-nn-win`
+
+Holdout **is** train on 70%, score on the other 30% (never seen).
+That is out-of-sample predictability, not train fit.
+
+`ladd` / `ldrop` are back on the board.
+
+`type-nn-win` = A+D+E+K with E **not** allowed to take `k` below 2
+(that was the iris train-acc crash). In practice E never fires on
+these stacks, so win ≡ **pDK**.
+
+| set | win ha / acc / p / add+drop | static ha / p |
+|-----|-----------------------------|---------------|
+| wine | 0.963 / 0.992 / **54** / 2+0 | 0.963 / 819 |
+| iris | 0.956 / 0.962 / **55** / 2+0 | 0.956 / 211 |
+| iono | **0.943** / 0.959 / **79** / 2+0 | 0.877 / 2065 |
+| wdbc | 0.977 / 0.977 / **30** / 2+0 | **0.988** / 1969 |
+
+Wins size and iono hold. Static still edges WDBC hold at 65× the
+params. No model yet has static’s WDBC hold **and** win’s size.

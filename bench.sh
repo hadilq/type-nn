@@ -50,8 +50,8 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_ben
         pass
 
 print()
-print("task         impl             hold_acc     acc  params   nbytes  us/infer   train_s  hold_mse      mse")
-print("-" * 108)
+print("task         impl             hold_acc     acc  params   nbytes  us/infer   train_s  ladd ldrop  hold_mse      mse")
+print("-" * 118)
 by = collections.defaultdict(list)
 for r in rows:
     by[r["task"]].append(r)
@@ -78,6 +78,7 @@ for task in order:
         ha_s = "   n/a" if ha is None or ha < 0 else f"{ha:6.3f}"
         print(f"{r['task']:<12} {r['impl']:<16} {ha_s} {acc_s} {r['params']:7d} {r['nbytes']:7d} "
               f"{r['us_per_infer']:8.3f} {r['train_s']:8.4f} "
+              f"{r.get('layer_add', 0):4d} {r.get('layer_drop', 0):5d} "
               f"{hm:8.5f} {r['mse']:8.5f}")
     if block:
         print()
@@ -85,7 +86,8 @@ print("Notes:")
 print("  • infer_s  = wall seconds for infer_n forward passes.")
 print("  • us/infer = infer_s / infer_n × 1e6  (microseconds per forward).")
 print("  • mse / acc      = 70% train split (XOR uses all 4 rows).")
-print("  • hold_mse / hold_acc = held-out 30% never trained on.")
+print("  • hold_mse / hold_acc = 30% never trained on (predictability).")
+print("  • ladd / ldrop = layers inserted / removed during train.")
 print("  • type-nn-static = fixed k=1 / k=2 / k=1 stack (was type-nn-proj2).")
 print("  • type-nn-opt    = unified dynamic policy.")
 print("  • type-nn-over   = over-add I-maps, drop only if W≈I.")
