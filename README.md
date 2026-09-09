@@ -789,3 +789,45 @@ What each specialist was doing:
 Not the #1 MSE on iris/wine/diabetes, but the first row that is
 **near-best on every file** (iris +0.006, wine +0.009, wdbc tied,
 diabetes +0.005) without swapping impls.
+
+
+## Board slimed; `type-nn-one` is now `type-nn-opt`
+
+Dropped the specialists we already learned from (old opt, idn family,
+dyn/layout alts, init2, typefact). Kept `type-nn-bpsite` and
+`type-nn-proj2` as references.
+
+`type-nn-opt` uses the **same** move on every real file:
+k=1 basis + product + k=1 readout at tick 16. The WDBC I-stack was
+not used: it does not transfer to a new wide binary set.
+
+New OOB set: **ionosphere** (351 rows, 34 radar features, g/b).
+Torch-mlp: mse 0.015 / acc 0.991.
+
+
+## Wine I/O = torch-mlp; `type-nn-over`
+
+Input z-score now uses torch's Bessel `std` (n−1). Wine labels stay
+1..3 → one-hot 3, same as `bench_torch.py`. MSE is still
+`mean` over n×out. Wine acc is **1.00**; the remaining 0.015 vs
+torch *train* 0.002 is calibration on the two off-class channels
+(torch holdout is 0.039 — we beat that).
+
+`type-nn-over` overestimates depth: at tick 16 it adds the site
+roles **plus** identity maps up to `LK_MAX_DEPTH`, then drops a
+layer only when it still acts as **I**:
+
+    k = 1, in = out,  max |W_ij − δ_ij| < 0.08
+    biases ignored
+
+| set | over (add/drop) | opt | site | proj2 |
+|-----|-----------------|-----|------|-------|
+| xor | 0 / 0+0 | 0 | 0 | 0 |
+| iris | 0.040 / 4+2 | **0.033** | 0.032 | 0.039 |
+| wine | 0.024 / 4+2 | 0.017 | **0.015** | 0.038 |
+| wdbc | 0.044 / 4+2 | 0.045 | 0.048 | **0.042** |
+| diabetes | 0.025 / 4+2 | 0.025 | 0.025 | 0.025 |
+| ionosphere | **0.032 / 4+2** / 0.98 | 0.052 | 0.062 | 0.031 |
+
+Over always adds 4 and drops 2 leftover I maps. On ionosphere that
+matches proj2 and beats site.

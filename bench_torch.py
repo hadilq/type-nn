@@ -290,6 +290,19 @@ def load_diabetes(path: str):
     return X, Y
 
 
+def load_ionosphere(path: str):
+    xs, ys = [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            xs.append([float(v) for v in parts[:34]])
+            ys.append([1.0 if parts[-1].lower().startswith("g") else 0.0])
+    return standardize(torch.tensor(xs)), torch.tensor(ys)
+
+
 def bench_real(kind: str, task: str, filename: str, loader, widths, epochs, lr, reps):
     path = find_data(filename)
     if path is None:
@@ -315,7 +328,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("task", nargs="?", default="all",
                    choices=["all", "xor", "quadratic", "mlp32x16x8",
-                            "iris", "wine", "wdbc", "diabetes", "real"])
+                            "iris", "wine", "wdbc", "diabetes", "ionosphere", "real"])
     p.add_argument("--kind", default="both", choices=["mlp", "poly", "both"])
     args = p.parse_args()
     kinds = ["mlp", "poly"] if args.kind == "both" else [args.kind]
@@ -329,9 +342,10 @@ def main() -> None:
         ("wine", "wine.data", load_wine, [16], 200, 0.03, 2000),
         ("wdbc", "wdbc.data", load_wdbc, [16], 80, 0.02, 1000),
         ("diabetes", "diabetes.tab.txt", load_diabetes, [16], 150, 0.02, 2000),
+        ("ionosphere", "ionosphere.data", load_ionosphere, [16], 120, 0.02, 1000),
     ]
     want_synth = args.task in ("all", "xor", "quadratic", "mlp32x16x8")
-    want_real = args.task in ("all", "real", "iris", "wine", "wdbc", "diabetes")
+    want_real = args.task in ("all", "real", "iris", "wine", "wdbc", "diabetes", "ionosphere")
     for kind in kinds:
         if want_synth:
             run = synth if args.task == "all" else {args.task: synth[args.task]} if args.task in synth else {}

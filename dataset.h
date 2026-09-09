@@ -20,6 +20,7 @@ int  dataset_load_iris(const char *path, Dataset *ds);
 int  dataset_load_wine(const char *path, Dataset *ds);
 int  dataset_load_wdbc(const char *path, Dataset *ds);
 int  dataset_load_diabetes(const char *path, Dataset *ds);
+int  dataset_load_ionosphere(const char *path, Dataset *ds);
 
 void dataset_standardize_inputs(Dataset *ds);
 void dataset_minmax_outputs(Dataset *ds); /* map Y to ~[0,1] for regression */

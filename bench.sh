@@ -16,7 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_opt.c type_nn_proj.c type_nn_bpest.c type_nn_bpsite.c type_nn_bpdeep.c type_nn_idins.c type_nn_typefact.c type_nn_initd.c"
+ALTS="type_nn_stack.c type_nn_idins.c type_nn_bpsite.c type_nn_proj.c type_nn_over.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
@@ -55,7 +55,7 @@ print("-" * 108)
 by = collections.defaultdict(list)
 for r in rows:
     by[r["task"]].append(r)
-order = ("xor", "quadratic", "mlp32x16x8", "iris", "wine", "wdbc", "diabetes")
+order = ("xor", "iris", "wine", "wdbc", "diabetes", "ionosphere")
 for task in order:
     block = by.get(task, [])
     block.sort(key=lambda r: (

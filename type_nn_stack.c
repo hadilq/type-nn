@@ -405,66 +405,19 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
 }
 
 /* openers live in the per-layout files; registry is here. */
-extern AltNet type_nn_arena_open(size_t, size_t);
-extern AltNet type_nn_soa_open(size_t, size_t);
-extern AltNet type_nn_gemm_open(size_t, size_t);
-extern AltNet type_nn_csr_open(size_t, size_t);
-extern AltNet type_nn_hotcold_open(size_t, size_t);
-extern AltNet type_nn_q8_open(size_t, size_t);
-extern AltNet type_nn_tape_open(size_t, size_t);
-extern AltNet type_nn_opt_q8_open(size_t, size_t);
 extern AltNet type_nn_opt_open(size_t, size_t);
-extern AltNet type_nn_bp_open(size_t, size_t);
-extern AltNet type_nn_mom_open(size_t, size_t);
-extern AltNet type_nn_adam_open(size_t, size_t);
-extern AltNet type_nn_bpgemm_open(size_t, size_t);
-extern AltNet type_nn_dyn_open(size_t, size_t);
-extern AltNet type_nn_dyn_sgd_open(size_t, size_t);
-extern AltNet type_nn_dyn_k_open(size_t, size_t);
-extern AltNet type_nn_dyn_w_open(size_t, size_t);
-extern AltNet type_nn_dyn_l_open(size_t, size_t);
-extern AltNet type_nn_dyn_adam_open(size_t, size_t);
-extern AltNet type_nn_proj_open(size_t, size_t);
-extern AltNet type_nn_proj_dyn_open(size_t, size_t);
-extern AltNet type_nn_proj2_open(size_t, size_t);
-extern AltNet type_nn_proj2_dyn_open(size_t, size_t);
-extern AltNet type_nn_bpdyn_open(size_t, size_t);
-extern AltNet type_nn_bpgap_open(size_t, size_t);
-extern AltNet type_nn_bpcurv_open(size_t, size_t);
-extern AltNet type_nn_bpcombo_open(size_t, size_t);
-extern AltNet type_nn_bpcube_open(size_t, size_t);
-extern AltNet type_nn_bpwide_open(size_t, size_t);
 extern AltNet type_nn_bpsite_open(size_t, size_t);
-extern AltNet type_nn_bpearly_open(size_t, size_t);
-extern AltNet type_nn_bpdeep_open(size_t, size_t);
-extern AltNet type_nn_lin_open(size_t, size_t);
+extern AltNet type_nn_proj2_open(size_t, size_t);
+extern AltNet type_nn_over_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_opt_open,
-    type_nn_proj_open,
-    type_nn_proj2_open,
-    type_nn_bpwide_open,
-    type_nn_bpcombo_open,
     type_nn_bpsite_open,
-    type_nn_bpearly_open,
-    type_nn_bpdeep_open,
-    type_nn_idi_open,
-    type_nn_idfact_open,
-    type_nn_idn_open,
-    type_nn_idtgt_open,
-    type_nn_idema_open,
-    type_nn_idmax_open,
-    type_nn_typefact_open,
-    type_nn_adapt_open,
-    type_nn_init2_open,
-    type_nn_init2p_open,
-    type_nn_one_open,
+    type_nn_proj2_open,
+    type_nn_over_open,
 };
 static const char *const NAMES[] = {
-    "type-nn-opt", "type-nn-proj", "type-nn-proj2",
-    "type-nn-bpwide", "type-nn-bpcombo", "type-nn-bpsite",
-    "type-nn-bpearly", "type-nn-bpdeep",
-    "type-nn-idi", "type-nn-idfact", "type-nn-idn", "type-nn-idtgt", "type-nn-idema", "type-nn-idmax", "type-nn-typefact", "type-nn-adapt", "type-nn-init2", "type-nn-init2p", "type-nn-one",
+    "type-nn-opt", "type-nn-bpsite", "type-nn-proj2", "type-nn-over",
 };
 
 size_t type_nn_alt_count(void)

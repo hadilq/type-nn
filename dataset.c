@@ -75,7 +75,9 @@ void dataset_standardize_inputs(Dataset *ds)
             double d = ds->X[i][j] - mean;
             var += d * d;
         }
-        var = sqrt(var / (double)ds->n);
+        /* torch.std is Bessel-corrected (n-1); match that so wine/iris
+           features are the same numbers torch-mlp sees. */
+        var = sqrt(var / (double)(ds->n > 1 ? ds->n - 1 : 1));
         if (var < 1e-12) var = 1.0;
         for (size_t i = 0; i < ds->n; i++)
             ds->X[i][j] = (ds->X[i][j] - mean) / var;
@@ -240,6 +242,44 @@ int dataset_load_diabetes(const char *path, Dataset *ds)
         if (n >= cap) break;
         for (int j = 0; j < 10; j++) ds->X[n][j] = v[j];
         ds->Y[n][0] = v[10];
+        n++;
+    }
+    fclose(f);
+    ds->n = n;
+    return n > 0 ? 0 : -1;
+}
+
+
+/* ---------- Ionosphere: 34 radar features + g/b ---------- */
+
+int dataset_load_ionosphere(const char *path, Dataset *ds)
+{
+    memset(ds, 0, sizeof(*ds));
+    snprintf(ds->name, sizeof(ds->name), "ionosphere");
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char line[4096];
+    size_t cap = 400, n = 0;
+    ds->in = 34;
+    ds->out = 1;
+    ds->classification = 1;
+    ds->X = mat_new(cap, ds->in);
+    ds->Y = mat_new(cap, ds->out);
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '\n' || line[0] == '\0') continue;
+        char *p = line;
+        if (n >= cap) break;
+        int ok = 1;
+        for (int j = 0; j < 34; j++) {
+            char *end = NULL;
+            ds->X[n][j] = strtod(p, &end);
+            if (end == p) { ok = 0; break; }
+            p = end;
+            if (*p == ',') p++;
+        }
+        if (!ok) continue;
+        while (*p == ' ' || *p == ',') p++;
+        ds->Y[n][0] = (p[0] == 'g' || p[0] == 'G') ? 1.0 : 0.0;
         n++;
     }
     fclose(f);

@@ -40,6 +40,10 @@
         url = "https://www4.stat.ncsu.edu/~boos/var.select/diabetes.tab.txt";
         hash = "sha256-RzP+vuaXhiwiE5zayHR4owDODRAVk96wftbA8zKKmc0=";
       };
+      ionosphere = pkgs.fetchurl {
+        url = "https://archive.ics.uci.edu/ml/machine-learning-databases/ionosphere/ionosphere.data";
+        hash = "sha256-RtUhhrhOIL5SkYrbk+j7mSazR5X/dQTCQ1CuBhagS70=";
+      };
 
       datasets = pkgs.runCommand "type-nn-datasets" { } ''
         mkdir -p $out/share/type-nn
@@ -47,6 +51,7 @@
         cp ${wine} $out/share/type-nn/wine.data
         cp ${wdbc} $out/share/type-nn/wdbc.data
         cp ${diabetes} $out/share/type-nn/diabetes.tab.txt
+        cp ${ionosphere} $out/share/type-nn/ionosphere.data
       '';
 
       devShell = pkgs.mkShell {
@@ -62,7 +67,7 @@
         TYPE_NN_DATA = "${datasets}/share/type-nn";
         shellHook = ''
           echo "TYPE_NN_DATA=$TYPE_NN_DATA"
-          echo "datasets: iris wine wdbc diabetes"
+          echo "datasets: iris wine wdbc diabetes ionosphere"
           cp $TYPE_NN_DATA/*.data data/
           cp $TYPE_NN_DATA/diabetes.tab.txt data/
         '';

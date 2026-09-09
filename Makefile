@@ -4,8 +4,7 @@ LDFLAGS ?= -lm
 
 .PHONY: all test test-asan test-alts demo bench data clean
 
-ALTS = type_nn_stack.c type_nn_opt.c type_nn_proj.c \
-       type_nn_bpest.c type_nn_bpsite.c type_nn_bpdeep.c type_nn_idins.c type_nn_typefact.c type_nn_initd.c
+ALTS = type_nn_stack.c type_nn_idins.c type_nn_bpsite.c type_nn_proj.c type_nn_over.c
 
 
 all: type-nn test_type_nn
@@ -46,6 +45,10 @@ data:
 	curl -fsSL -o data/wdbc.data \
 	  https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data
 	curl -fsSL -o data/diabetes.tab.txt \
+	  https://www4.stat.ncsu.edu/~boos/var.select/diabetes.tab.txt
+	curl -fsSL -o data/ionosphere.data \
+	  https://archive.ics.uci.edu/ml/machine-learning-databases/ionosphere/ionosphere.data
+	# kept
 	  https://www4.stat.ncsu.edu/~boos/var.select/diabetes.tab.txt
 
 bench: bench_type_nn bench_alts
