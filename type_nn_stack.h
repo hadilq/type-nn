@@ -3,6 +3,7 @@
 
 #include "type_nn_alt.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 #define TNN_K0          2
 #define TNN_MAX_OR      8
@@ -43,8 +44,16 @@ typedef struct TStack {
 TStack *tstack_open(const char *impl, const TLayerOps *ops, size_t in, size_t out);
 void    tstack_bind(AltNet *dst, TStack *s);
 
-double tnn_clamp(double x, double lo, double hi);
-double tnn_rand(void);
+static inline double tnn_clamp(double x, double lo, double hi)
+{
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+}
+static inline double tnn_rand(void)
+{
+    return ((double)rand() / (double)RAND_MAX * 2.0 - 1.0) * 0.15;
+}
 void   tnn_dense_fwd(size_t in, size_t out, size_t k,
                      const double *W, const double *b,
                      const double *x, double *y, double *or_val);

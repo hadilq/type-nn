@@ -963,3 +963,12 @@ these stacks, so win ≡ **pDK**.
 
 Wins size and iono hold. Static still edges WDBC hold at 65× the
 params. No model yet has static’s WDBC hold **and** win’s size.
+
+## Standalone winner
+
+`type_nn_win.h` / `type_nn_win.c` are independent of the experiment
+files. Link only those two plus the headers:
+
+    cc -I. demo.c type_nn_win.c -lm
+
+`type_nn_win_open(in, out)` is the A+D+E+K policy.

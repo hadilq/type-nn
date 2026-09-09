@@ -5,18 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-double tnn_clamp(double x, double lo, double hi)
-{
-    if (x < lo) return lo;
-    if (x > hi) return hi;
-    return x;
-}
-
-double tnn_rand(void)
-{
-    return ((double)rand() / (double)RAND_MAX * 2.0 - 1.0) * 0.15;
-}
-
 void tnn_dense_fwd(size_t in, size_t out, size_t k,
                    const double *W, const double *b,
                    const double *x, double *y, double *or_val)
