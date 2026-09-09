@@ -831,3 +831,59 @@ layer only when it still acts as **I**:
 
 Over always adds 4 and drops 2 leftover I maps. On ionosphere that
 matches proj2 and beats site.
+
+
+## Rename, infer_s, and holdout
+
+`type-nn-proj2` is now **`type-nn-static`**: a fixed
+`k=1 / k=2 / k=1` stack that does not grow.
+
+`infer_s` is the wall time of `infer_n` forwards.
+`us/infer = infer_s / infer_n × 1e6` (µs per forward). Both are on
+the board.
+
+**Holdout** is a 30% split that is *never trained on* (70/30, seed
+34972). Older “we beat torch holdout” compared our *full-file train
+MSE* to a torch 70/30 from `tools/entropy_holdout.py` — that was not
+on `./bench.sh`. The board now has `hold_mse` / `hold_acc` for both
+type-nn and torch.
+
+Wine, same protocol:
+
+| impl | train mse | **hold mse** | hold acc |
+|------|-----------|--------------|----------|
+| torch-mlp | 0.002 | 0.034 | 0.94 |
+| type-nn-static | 0.011 | **0.031** | **0.96** |
+| type-nn-opt | 0.008 | 0.096 | 0.93 |
+| type-nn-bpsite | 0.006 | 0.155 | 0.93 |
+
+Static beats torch on wine *holdout*. Site/opt memorize the 70%
+(train 0.006) and lose the 30%.
+
+
+## Board sort
+
+`(hold_acc ↓, acc ↓, params ↑, nbytes ↑, us/infer ↑, train_s ↑)`
+and the printed columns follow that order.
+
+## Approaches to cut params (for review — not applied yet)
+
+Current fat rows: site wine 1187p, opt/static ionosphere 2065p,
+WDBC ~1969p. Torch-mlp wine is 16-wide ≈ 13×16+16×3 = **259p**.
+
+| # | idea | what shrinks | risk |
+|---|------|----------------|------|
+| A | **Smaller H** (`pick_hid` 4/8 not 16/24) | every W is `out·k·in` | hold_acc drop on WDBC/iono |
+| B | **k=1 everywhere** (no product tail) | halves Or rows | XOR / extra interaction terms |
+| C | **Low-rank W = U V** (rank r ≪ in) | `n_or·(in+r)` vs `n_or·in` | extra hyperparam r |
+| D | **Prune \|W\| < τ after train**, then fine-tune | nnz only | need CSR layout again |
+| E | **Type-lift / share Ors** (old typefact, 61p iris) | common affine once | lift must stay exact-I |
+| F | **Drop dead Or rows** (row L2 below τ, keep bias) | `k` per And | same as idle-factor shrink |
+| G | **Do not over-add I maps** | no dim² spikes during train | over already drops them after |
+| H | **Input PCA / first layer thin** (in→r, r≈8) | all later W | loses raw features |
+| I | **Q8 / packed int8** (old opt-q8) | 4× nbytes, same param *count* | XOR mse was not 0 |
+| J | **Tied readout** (one W for all classes + offsets) | `(out-1)·feat` | 3-class wine/iris |
+| K | **Grow H from 2 only when ge says so** | starts tiny | late width = late-insert penalty |
+
+A, E, F, K are the ones that stay faithful to And/Or + scale/add/remove.
+C/D/I are layout/compression. B kills the product that makes XOR free.

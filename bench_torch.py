@@ -30,7 +30,8 @@ def rss_kb() -> int:
 
 
 def emit(impl: str, task: str, train_s: float, infer_s: float, infer_n: int,
-         params: int, mse: float, n: int = 0, acc: float = -1.0) -> None:
+         params: int, mse: float, n: int = 0, acc: float = -1.0,
+         hold_mse: float = None, hold_acc: float = None) -> None:
     us = (infer_s * 1e6 / infer_n) if infer_n else 0.0
     print(json.dumps({
         "impl": impl,
@@ -50,6 +51,8 @@ def emit(impl: str, task: str, train_s: float, infer_s: float, infer_n: int,
         "dyn_scale": 0.0,
         "dyn_depth": 0,
         "dyn_params": 0,
+        "hold_mse": float(hold_mse) if hold_mse is not None else float(mse),
+        "hold_acc": float(hold_acc) if hold_acc is not None else float(acc),
     }))
 
 
@@ -310,6 +313,13 @@ def bench_real(kind: str, task: str, filename: str, loader, widths, epochs, lr, 
         return
     X, Y = loader(path)
     in_dim, out_dim = X.shape[1], Y.shape[1]
+    n = X.shape[0]
+    g = torch.Generator().manual_seed(34972)
+    perm = torch.randperm(n, generator=g)
+    ntr = max(1, int(0.7 * n))
+    tr, te = perm[:ntr], perm[ntr:]
+    Xtr, Ytr = X[tr], Y[tr]
+    Xte, Yte = X[te], Y[te]
     if kind == "mlp":
         hid = widths[0]
         mod = MLP([in_dim, hid, out_dim])
@@ -317,11 +327,13 @@ def bench_real(kind: str, task: str, filename: str, loader, widths, epochs, lr, 
     else:
         mod = PolyLinear(in_dim, out_dim)
         impl = "torch-poly"
-    train_s = fit_sgd(mod, X, Y, epochs, lr)
+    train_s = fit_sgd(mod, Xtr, Ytr, epochs, lr)
     infer_s = infer_loop(mod, X, reps)
-    acc = accuracy(mod, X, Y) if task != "diabetes" else -1.0
-    emit(impl, task, train_s, infer_s, reps, nparams(mod), final_mse(mod, X, Y),
-         n=X.shape[0], acc=acc)
+    acc = accuracy(mod, Xtr, Ytr) if task != "diabetes" else -1.0
+    hold_acc = accuracy(mod, Xte, Yte) if task != "diabetes" and len(te) else acc
+    emit(impl, task, train_s, infer_s, reps, nparams(mod), final_mse(mod, Xtr, Ytr),
+         n=n, acc=acc, hold_mse=final_mse(mod, Xte, Yte) if len(te) else None,
+         hold_acc=hold_acc)
 
 
 def main() -> None:

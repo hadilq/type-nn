@@ -81,6 +81,7 @@ AltNet type_nn_dyn_adam_open(size_t in, size_t out);
 AltNet type_nn_proj_open(size_t in, size_t out);
 AltNet type_nn_proj_dyn_open(size_t in, size_t out);
 AltNet type_nn_proj2_open(size_t in, size_t out);
+AltNet type_nn_static_open(size_t in, size_t out);
 AltNet type_nn_proj2_dyn_open(size_t in, size_t out);
 AltNet type_nn_bpdyn_open(size_t in, size_t out);
 AltNet type_nn_bpgap_open(size_t in, size_t out);

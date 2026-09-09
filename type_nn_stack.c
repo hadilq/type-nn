@@ -417,7 +417,7 @@ static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_over_open,
 };
 static const char *const NAMES[] = {
-    "type-nn-opt", "type-nn-bpsite", "type-nn-proj2", "type-nn-over",
+    "type-nn-opt", "type-nn-bpsite", "type-nn-static", "type-nn-over",
 };
 
 size_t type_nn_alt_count(void)

@@ -404,9 +404,14 @@ AltNet type_nn_proj_open(size_t in, size_t out)
 AltNet type_nn_proj_dyn_open(size_t in, size_t out)
 { return open_proj("type-nn-proj-dyn", 1, in, out); }
 AltNet type_nn_proj2_open(size_t in, size_t out)
-{ return open_proj2("type-nn-proj2", 0, in, out); }
+{ return open_proj2("type-nn-static", 0, in, out); }
 AltNet type_nn_proj2_dyn_open(size_t in, size_t out)
-{ return open_proj2("type-nn-proj2-dyn", 1, in, out); }
+{ return open_proj2("type-nn-static-dyn", 1, in, out); }
 
 AltNet type_nn_lin_open(size_t in, size_t out)
 { return open_lin(in, out); }
+
+AltNet type_nn_static_open(size_t in, size_t out)
+{
+    return type_nn_proj2_open(in, out);
+}

@@ -50,7 +50,7 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_ben
         pass
 
 print()
-print("task         impl               params   nbytes  us/infer   train_s       mse      acc  dscale ddepth dparams  ladd ldrop")
+print("task         impl             hold_acc     acc  params   nbytes  us/infer   train_s  hold_mse      mse")
 print("-" * 108)
 by = collections.defaultdict(list)
 for r in rows:
@@ -58,8 +58,13 @@ for r in rows:
 order = ("xor", "iris", "wine", "wdbc", "diabetes", "ionosphere")
 for task in order:
     block = by.get(task, [])
+    def acc_key(v):
+        if v is None or v < 0:
+            return -1.0
+        return float(v)
     block.sort(key=lambda r: (
-        r.get("mse", 1e300),
+        -acc_key(r.get("hold_acc", r.get("acc", -1))),
+        -acc_key(r.get("acc", -1)),
         r.get("params", 1 << 30),
         r.get("nbytes", 1 << 30),
         r.get("us_per_infer", 1e300),
@@ -68,32 +73,22 @@ for task in order:
     for r in block:
         acc = r.get("acc", -1)
         acc_s = "   n/a" if acc is None or acc < 0 else f"{acc:6.3f}"
-        print(f"{r['task']:<12} {r['impl']:<18} {r['params']:7d}  {r['nbytes']:7d}  "
-              f"{r['us_per_infer']:8.3f}  {r['train_s']:8.4f}  "
-              f"{r['mse']:.6f}  {acc_s}  "
-              f"{r.get('dyn_scale', 0):6.1f} {r.get('dyn_depth', 0):6d} {r.get('dyn_params', 0):7d} {r.get('layer_add', 0):5d} {r.get('layer_drop', 0):5d}")
+        hm = r.get("hold_mse", r.get("mse", 0))
+        ha = r.get("hold_acc", acc)
+        ha_s = "   n/a" if ha is None or ha < 0 else f"{ha:6.3f}"
+        print(f"{r['task']:<12} {r['impl']:<16} {ha_s} {acc_s} {r['params']:7d} {r['nbytes']:7d} "
+              f"{r['us_per_infer']:8.3f} {r['train_s']:8.4f} "
+              f"{hm:8.5f} {r['mse']:8.5f}")
     if block:
         print()
 print("Notes:")
-print("  • dscale = Σ_layers (|ΔOr|+|ΔAnd|+|ΔOr|·|ΔAnd|) after train.")
-print("    Or = sum-type count (out·k), And = product-type count (out).")
-print("  • ddepth = final depth − start depth.\n  • ladd / ldrop = raw layer inserts / deletes during train (churn if both > 0).")
-print("  • dparams = param_count after train − param_count at init.")
-print("  • type-nn         = original linked lists (type_nn.c frozen).")
-print("  • type-nn-arena   = And/Or nodes in a slab, integer next.")
-print("  • type-nn-soa     = SoA W[or][in].")
-print("  • type-nn-gemm    = blocked GEMV affine map.")
-print("  • type-nn-csr     = CSR affine map.")
-print("  • type-nn-hotcold = first 16 features dense.")
-print("  • type-nn-q8      = int8 weights + per-Or scale.")
-print("  • type-nn-tape    = Wengert-list reverse mode.")
-print("  • type-nn-opt-q8  = previous packed opt (int8); XOR MSE is not exactly 0.")
-print("  • type-nn-opt     = double W + adaptive SoA/GEMV, one-pass backward.")
-print("  • type-nn-bp      = prefix/suffix dOr, fused dx, still SGD.")
-print("  • type-nn-mom     = SGD + momentum (μ=0.9) on And/Or weights.")
-print("  • type-nn-adam    = Adam (β1=0.9, β2=0.999) on And/Or weights.")
-print("  • type-nn-bpgemm  = Wᵀ dOr + dOr xᵀ blocked backward.")
-print("  • Rows sorted by (mse, params, nbytes, us/infer, train_s), all ascending.")
-print("  • type-nn-dyn     = residual-driven grow k / insert / widen hidden.")
-print("  • All type-nn-* variants have And/Or layers, grow/shrink, insert/remove.")
+print("  • infer_s  = wall seconds for infer_n forward passes.")
+print("  • us/infer = infer_s / infer_n × 1e6  (microseconds per forward).")
+print("  • mse / acc      = 70% train split (XOR uses all 4 rows).")
+print("  • hold_mse / hold_acc = held-out 30% never trained on.")
+print("  • type-nn-static = fixed k=1 / k=2 / k=1 stack (was type-nn-proj2).")
+print("  • type-nn-opt    = unified dynamic policy.")
+print("  • type-nn-over   = over-add I-maps, drop only if W≈I.")
+print("  • type-nn-bpsite = early proj+readout from BP sites.")
+print("  • Sorted by (hold_acc desc, acc desc, params, nbytes, us/infer, train_s).")
 PY

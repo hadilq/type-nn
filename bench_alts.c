@@ -36,7 +36,8 @@ static void emit(const char *impl, const char *task,
                  size_t params, size_t nbytes, double mse,
                  size_t n, double acc, size_t depth,
                  double dyn_scale, int dyn_depth, long dyn_params,
-                 long layer_add, long layer_drop)
+                 long layer_add, long layer_drop,
+                 double hold_mse, double hold_acc)
 {
     double us = infer_n ? infer_s * 1e6 / (double)infer_n : 0.0;
     printf("{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
@@ -44,10 +45,12 @@ static void emit(const char *impl, const char *task,
            "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
            "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
            "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
-           "\"layer_add\":%ld,\"layer_drop\":%ld}\n",
+           "\"layer_add\":%ld,\"layer_drop\":%ld,"
+           "\"hold_mse\":%.8f,\"hold_acc\":%.6f}\n",
            impl, task, train_s, infer_s, infer_n, us,
            rss_kb(), rss_kb(), params, nbytes, mse, depth, n, acc,
-           dyn_scale, dyn_depth, dyn_params, layer_add, layer_drop);
+           dyn_scale, dyn_depth, dyn_params, layer_add, layer_drop,
+           hold_mse, hold_acc);
 }
 
 static double mse_of(AltNet *a, double **X, double **Y, size_t n)
@@ -89,6 +92,46 @@ static double acc_of(AltNet *a, Dataset *ds)
     return (double)ok / (double)ds->n;
 }
 
+static double mse_idx(AltNet *a, Dataset *ds, const size_t *idx, size_t n)
+{
+    if (!n) return 0.0;
+    double *pred = (double *)calloc(a->out, sizeof(double));
+    double acc = 0.0;
+    for (size_t t = 0; t < n; t++) {
+        size_t i = idx[t];
+        a->forward(a->ctx, ds->X[i], pred);
+        for (size_t k = 0; k < a->out; k++) {
+            double d = pred[k] - ds->Y[i][k];
+            acc += d * d;
+        }
+    }
+    free(pred);
+    return acc / (double)(n * (a->out ? a->out : 1));
+}
+
+static double acc_idx(AltNet *a, Dataset *ds, const size_t *idx, size_t n)
+{
+    if (!ds->classification || !n) return -1.0;
+    double *pred = (double *)calloc(a->out, sizeof(double));
+    size_t ok = 0;
+    for (size_t t = 0; t < n; t++) {
+        size_t i = idx[t];
+        a->forward(a->ctx, ds->X[i], pred);
+        if (ds->out == 1) {
+            if ((pred[0] >= 0.5) == (ds->Y[i][0] >= 0.5)) ok++;
+        } else {
+            size_t gp = 0, wp = 0;
+            for (size_t k = 1; k < ds->out; k++) {
+                if (pred[k] > pred[gp]) gp = k;
+                if (ds->Y[i][k] > ds->Y[i][wp]) wp = k;
+            }
+            if (gp == wp) ok++;
+        }
+    }
+    free(pred);
+    return (double)ok / (double)n;
+}
+
 static void run_xy(const char *task, AltNet *a, double **X, double **Y,
                    size_t n, size_t epochs, double lr, size_t reps, double acc)
 {
@@ -115,10 +158,11 @@ static void run_xy(const char *task, AltNet *a, double **X, double **Y,
     size_t depth = a->depth ? a->depth(a->ctx) : 1;
     long ladd = a->n_add ? (long)a->n_add(a->ctx) : 0;
     long ldrop = a->n_drop ? (long)a->n_drop(a->ctx) : 0;
+    double m = mse_of(a, X, Y, n);
     emit(a->impl, task, train_s, infer_s, reps,
          a->param_count(a->ctx), a->nbytes(a->ctx),
-         mse_of(a, X, Y, n), n, acc, depth, dyn_scale, dyn_depth, dyn_params,
-         ladd, ldrop);
+         m, n, acc, depth, dyn_scale, dyn_depth, dyn_params,
+         ladd, ldrop, m, acc);
 }
 
 static void bench_xor(AltNet (*open)(size_t, size_t))
@@ -197,11 +241,27 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
     srand(34972);
     a.init(a.ctx);
+    size_t *perm = (size_t *)malloc(ds.n * sizeof(size_t));
+    for (size_t i = 0; i < ds.n; i++) perm[i] = i;
+    for (size_t i = ds.n; i > 1; i--) {
+        size_t j = (size_t)rand() % i;
+        size_t tmp = perm[i - 1]; perm[i - 1] = perm[j]; perm[j] = tmp;
+    }
+    size_t ntr = ds.n * 7 / 10;
+    if (ntr < 1) ntr = ds.n;
+    if (ntr > ds.n) ntr = ds.n;
+    size_t nte = ds.n - ntr;
+    double **Xtr = (double **)malloc(ntr * sizeof(double *));
+    double **Ytr = (double **)malloc(ntr * sizeof(double *));
+    for (size_t i = 0; i < ntr; i++) {
+        Xtr[i] = ds.X[perm[i]];
+        Ytr[i] = ds.Y[perm[i]];
+    }
     TnnSnap before, after;
     type_nn_alt_snap(&a, &before);
     size_t p0 = a.param_count ? a.param_count(a.ctx) : 0;
     double t0 = wall_s();
-    type_nn_alt_train(&a, ds.X, ds.Y, ds.n, epochs, lr);
+    type_nn_alt_train(&a, Xtr, Ytr, ntr, epochs, lr);
     double train_s = wall_s() - t0;
     type_nn_alt_snap(&a, &after);
     double dyn_scale = 0.0;
@@ -218,12 +278,17 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     {
         long ladd = a.n_add ? (long)a.n_add(a.ctx) : 0;
         long ldrop = a.n_drop ? (long)a.n_drop(a.ctx) : 0;
+        double tr_mse = mse_idx(&a, &ds, perm, ntr);
+        double te_mse = nte ? mse_idx(&a, &ds, perm + ntr, nte) : tr_mse;
+        double tr_acc = acc_idx(&a, &ds, perm, ntr);
+        double te_acc = nte ? acc_idx(&a, &ds, perm + ntr, nte) : tr_acc;
         emit(a.impl, task, train_s, infer_s, reps,
              a.param_count(a.ctx), a.nbytes(a.ctx),
-             mse_of(&a, ds.X, ds.Y, ds.n), ds.n, acc_of(&a, &ds),
+             tr_mse, ds.n, tr_acc,
              a.depth ? a.depth(a.ctx) : 1, dyn_scale, dyn_depth, dyn_params,
-             ladd, ldrop);
+             ladd, ldrop, te_mse, te_acc);
     }
+    free(Xtr); free(Ytr); free(perm);
     a.free(a.ctx);
     dataset_free(&ds);
     free(path);
