@@ -2,7 +2,7 @@ CC      ?= gcc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wformat -I.
 LDFLAGS ?= -lm
 
-.PHONY: all test test-asan test-alts demo bench data clean
+.PHONY: all test test-asan test-alts demo bench data clean lean lean-clean
 
 ALTS = type_nn_stack.c type_nn_idins.c type_nn_bpsite.c type_nn_proj.c type_nn_over.c type_nn_win.c
 
@@ -48,12 +48,18 @@ data:
 	  https://www4.stat.ncsu.edu/~boos/var.select/diabetes.tab.txt
 	curl -fsSL -o data/ionosphere.data \
 	  https://archive.ics.uci.edu/ml/machine-learning-databases/ionosphere/ionosphere.data
-	# kept
-	  https://www4.stat.ncsu.edu/~boos/var.select/diabetes.tab.txt
 
 bench: bench_type_nn bench_alts
 	chmod +x bench.sh
 	./bench.sh
 
-clean:
+# Machine-checked statements of the propositions in the post. Bare Lean 4,
+# no Mathlib, so this finishes in seconds. `nix develop` puts lake on PATH.
+lean:
+	cd lean && lake build
+
+lean-clean:
+	rm -rf lean/.lake lean/lake-manifest.json
+
+clean: lean-clean
 	rm -f type-nn test_type_nn test_type_nn_asan bench_type_nn bench_alts test_alts

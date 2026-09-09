@@ -54,6 +54,11 @@
         cp ${ionosphere} $out/share/type-nn/ionosphere.data
       '';
 
+      # Lean 4 for the machine-checked half of the project. No Mathlib: every
+      # proof in ./lean uses only the axioms of a linearly ordered commutative
+      # ring, so bare Lean core is enough and `lake build` takes seconds.
+      lean = pkgs.lean4;
+
       devShell = pkgs.mkShell {
         packages = with pkgs; [
           gcc
@@ -63,13 +68,34 @@
           pkg-config
           curl
           py
+          lean
         ];
         TYPE_NN_DATA = "${datasets}/share/type-nn";
         shellHook = ''
           echo "TYPE_NN_DATA=$TYPE_NN_DATA"
           echo "datasets: iris wine wdbc diabetes ionosphere"
+          mkdir -p data
           cp $TYPE_NN_DATA/*.data data/
           cp $TYPE_NN_DATA/diabetes.tab.txt data/
+          echo "make bench   -> every model on every dataset"
+          echo "make lean    -> check the proofs in ./lean"
+        '';
+      };
+
+      # `nix build .#proofs` type-checks the whole Lean development. It is
+      # hermetic: no network, no Mathlib cache, no toolchain download.
+      proofs = pkgs.stdenv.mkDerivation {
+        name = "type-nn-proofs";
+        src = ./lean;
+        nativeBuildInputs = [ lean ];
+        buildPhase = ''
+          export HOME=$TMPDIR
+          lake build
+        '';
+        installPhase = ''
+          mkdir -p $out
+          cp -R .lake/build $out/ 2>/dev/null || true
+          echo "TypeNN proofs check out" > $out/RESULT
         '';
       };
 

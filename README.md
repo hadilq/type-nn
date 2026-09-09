@@ -45,6 +45,7 @@ Here the product *is* the non-linearity.
 
 | file              | role                                        |
 |-------------------|---------------------------------------------|
+| `lean/`           | Lean 4 proofs of the algebra (no Mathlib)   |
 | `type_nn.h/.c`    | public structs + forward/backward           |
 | `test_type_nn.c`  | unit + corner-case + scenario tests         |
 | `run.c`           | XOR / sin(x) / structure demos              |
@@ -63,18 +64,59 @@ Here the product *is* the non-linearity.
 make test          # 189 checks
 make test-asan
 make demo
-make data          # curl the four public datasets into ./data
-make bench         # type-nn vs PyTorch (needs python3 + torch)
+make data          # curl the five public datasets into ./data
+make bench         # every implemented model on every dataset, + PyTorch
+make lean          # type-check the proofs in ./lean (needs lake)
 ```
+
+`make bench` is the one to run. It builds `bench_type_nn` and `bench_alts`,
+runs **every model in this repository against every dataset**, and prints one
+sorted table per task with hold-out accuracy, parameter count, bytes,
+inference time and how many layers each run added or dropped. PyTorch rows are
+included when `python3 -c "import torch"` succeeds and skipped otherwise.
+`./bench.sh wine` restricts it to one task.
 
 With Nix / direnv (`use flake`):
 
 ```bash
-nix develop        # sets TYPE_NN_DATA to the flake-fetched datasets
+nix develop        # sets TYPE_NN_DATA, puts gcc, lake and torch on PATH
 make bench
-# or just the datasets package:
+make lean
+# or just the pieces:
 nix build .#datasets
+nix build .#proofs   # hermetic Lean check, no network, no Mathlib
+nix flake check
 ```
+
+## Proofs (`./lean`)
+
+The architecture moves are algebra, so they are stated and checked as algebra.
+`./lean` is a dependency-free Lean 4 library — **no Mathlib**, so `lake build`
+finishes in seconds rather than fetching a multi-gigabyte cache.
+
+| result | Lean name | what it says |
+|--------|-----------|--------------|
+| Prop 2  | `TypeNN.gauge_invariant`     | rescaling factors with `∏ c = 1` fixes the And |
+| Lemma 3 | `TypeNN.prefix_suffix`       | prefix × suffix is `∂A/∂O_s`, no division |
+| Prop 4  | `TypeNN.gauss_seidel`        | the in-place step costs exactly `η‖∇_O L‖² x` |
+| Thm 5   | `TypeNN.dead_factor`         | one zero factor freezes every sibling |
+| Thm 5   | `TypeNN.dead_and`            | two zero factors freeze the whole And |
+| Prop 6  | `TypeNN.orVal_zero_pad`      | zero-padding the input is exact |
+| Prop 7  | `TypeNN.widen_preserves`     | widening preserves the composite |
+| Prop 8  | `TypeNN.grow_rank_exact`     | a unit factor `(W=0, b=1)` is exact |
+| Prop 11 | `TypeNN.identity_insert`     | the identity insert is exact |
+| Prop 12 | `TypeNN.identity_test_bound` | the identity test is a bound, not an identity |
+
+Scalars are `Int`. Every proof uses only the axioms of a linearly ordered
+commutative ring — nothing divides — and `ℝ` is such a ring, so fixing the
+carrier is what lets the library build against bare Lean core. `TypeNN.lean`
+ends in `#print axioms` for each theorem; the build output shows they depend
+on nothing but `propext`, `Classical.choice` and `Quot.sound`, and in
+particular not on `sorryAx`.
+
+Not formalised, and the post says so: Proposition 1 (degree of the composite)
+needs a theory of polynomial degree, and Propositions 9 and 10 are statements
+about the clipped algebra.
 
 ## Datasets (fetched by `flake.nix`)
 
