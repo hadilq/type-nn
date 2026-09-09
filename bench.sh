@@ -92,5 +92,6 @@ print("  • type-nn-static = fixed k=1 / k=2 / k=1 stack (was type-nn-proj2).")
 print("  • type-nn-opt    = unified dynamic policy.")
 print("  • type-nn-over   = over-add I-maps, drop only if W≈I.")
 print("  • type-nn-bpsite = early proj+readout from BP sites.")
+print("  • Board kept: opt, bpsite, static, over, win.")
 print("  • Sorted by (hold_acc desc, acc desc, params, nbytes, us/infer, train_s).")
 PY
