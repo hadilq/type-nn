@@ -52,17 +52,30 @@ typedef struct {
     double *act[LK_MAX_DEPTH + 1];
     size_t  act_w[LK_MAX_DEPTH + 1];
     size_t  depth;
-    int     dynamic, added_layers, early_done, force_roles;
+    int     dynamic, added_layers, early_done, force_roles, par;
     unsigned n_add, n_drop; int locked;
     unsigned tick, last_change;
     double  ema;
     unsigned long tstep;
     double  b1p, b2p;
     const char *name;
+    size_t nnz_cap;
 } PNet;
 
-static size_t pick_hid(size_t in, size_t out)
+#define PAR_A 1
+#define PAR_D 2
+#define PAR_E 4
+#define PAR_K 8
+
+static size_t pick_hid_par(const PNet *N, size_t in, size_t out)
 {
+    if (N->par & PAR_K) return (out > 2 ? out : 2);
+    if (N->par & PAR_A) {
+        size_t h = 4;
+        if (in >= 16) h = 8;
+        if (h < out) h = out;
+        return h;
+    }
     size_t h = 8;
     if (in >= 10) h = 16;
     if (in >= 24) h = 24;
@@ -194,7 +207,7 @@ static void insert_at(PNet *N, size_t idx)
     if (idx == 0 && N->layer[0].L.in >= 4) {
         /* front: real k=1 basis in → H, stitch the old first layer */
         size_t in = N->layer[0].L.in;
-        size_t H = pick_hid(in, N->layer[N->depth - 1].L.out);
+        size_t H = pick_hid_par(N, in, N->layer[N->depth - 1].L.out);
         memmove(&N->layer[1], &N->layer[0], N->depth * sizeof(PLayer));
         memset(&N->layer[0], 0, sizeof(PLayer));
         palloc(&N->layer[0], in, H, 1);
@@ -211,7 +224,7 @@ static void insert_at(PNet *N, size_t idx)
         /* after product tail: real k=1 readout, mid stays product features */
         PLayer *tail = &N->layer[N->depth - 1];
         size_t o = tail->L.out;
-        size_t feat = pick_hid(tail->L.in, o);
+        size_t feat = pick_hid_par(N, tail->L.in, o);
         if (feat < o) feat = o;
         lk_resize_out(&tail->L, feat);
         psync(tail);
@@ -243,56 +256,62 @@ static void insert_at(PNet *N, size_t idx)
 #define ID_W_TAU 0.08
 
 /* Identity-like: square k=1 map whose W is I within tau. Biases ignored. */
-static int acts_like_identity(const PLayer *P)
+
+static void prune_small_w(PNet *N)
 {
-    const LKLayer *L = &P->L;
-    if (L->k != 1 || L->in != L->out || L->in == 0) return 0;
-    for (size_t i = 0; i < L->out; i++) {
-        const double *w = L->W + i * L->in;
-        for (size_t j = 0; j < L->in; j++) {
-            double target = (i == j) ? 1.0 : 0.0;
-            if (fabs(w[j] - target) > ID_W_TAU) return 0;
+    size_t nnz = 0;
+    for (size_t i = 0; i < N->depth; i++) {
+        LKLayer *L = &N->layer[i].L;
+        for (size_t t = 0; t < L->n_or * L->in; t++) {
+            if (fabs(L->W[t]) < 0.03) L->W[t] = 0.0;
+            else nnz++;
         }
+        nnz += L->n_or; /* biases kept */
     }
-    return 1;
+    N->nnz_cap = nnz;
 }
 
-static void drop_identity_layer(PNet *N)
+static void drop_dead_or(PNet *N)
 {
-    if (N->depth <= 2) return;
-    for (size_t i = 0; i + 1 < N->depth; i++) {
-        if (N->layer[i].freeze_col > 0) continue;
-        if (!acts_like_identity(&N->layer[i])) continue;
-        size_t nin = N->layer[i].L.in;
-        pfree(&N->layer[i]);
-        memmove(&N->layer[i], &N->layer[i + 1],
-                (N->depth - i - 1) * sizeof(PLayer));
-        memset(&N->layer[N->depth - 1], 0, sizeof(PLayer));
-        N->depth--;
-        N->n_drop++;
-        lk_resize_in(&N->layer[i].L, nin);
+    for (size_t i = 0; i < N->depth; i++) {
+        LKLayer *L = &N->layer[i].L;
+        if (L->k < 2) continue;
+        /* drop last Or of each And if its W is tiny */
+        int any = 0;
+        for (size_t o = 0; o < L->out; o++) {
+            double *w = L->W + ((o * L->k) + (L->k - 1)) * L->in;
+            double n2 = 0.0;
+            for (size_t j = 0; j < L->in; j++) n2 += w[j] * w[j];
+            if (n2 < 0.01) any = 1;
+        }
+        if (!any) continue;
+        size_t nk = L->k - 1;
+        lk_set_k(L, nk);
         psync(&N->layer[i]);
+        N->n_drop++;
         N->last_change = N->tick;
         return;
     }
 }
 
-static void over_add_identities(PNet *N)
+static void grow_h_if_needed(PNet *N)
 {
-    /* Overestimate: fill toward max depth with exact I maps. */
-    while (N->depth + 1 < LK_MAX_DEPTH) {
-        size_t dim = N->layer[0].L.in;
-        memmove(&N->layer[1], &N->layer[0], N->depth * sizeof(PLayer));
-        memset(&N->layer[0], 0, sizeof(PLayer));
-        palloc(&N->layer[0], dim, dim, 1);
-        lk_identity(&N->layer[0].L);
-        psync(&N->layer[0]);
-        N->layer[0].freeze_col = FREEZE;
-        N->depth++;
-        N->n_add++;
-        N->added_layers++;
-        N->last_change = N->tick;
+    if (N->depth < 1) return;
+    PLayer *P = &N->layer[0];
+    if (P->L.k != 1) return;
+    if (P->ge < 0.08) return;
+    {
+        size_t cap = (N->par & PAR_A) ? 8 : 16;
+        if (P->L.out >= cap) return;
     }
+    size_t nout = P->L.out + 2;
+    lk_resize_out(&P->L, nout);
+    psync(P);
+    if (N->depth > 1) {
+        lk_resize_in(&N->layer[1].L, nout);
+        psync(&N->layer[1]);
+    }
+    N->last_change = N->tick;
 }
 
 static void estimate_and_apply(PNet *N)
@@ -300,19 +319,18 @@ static void estimate_and_apply(PNet *N)
     if (!N->dynamic) return;
     if (N->layer[0].L.in < 4) return;
     if (!N->early_done && N->tick >= 16) {
-        /* same useful roles as site, then extra I maps (overestimate). */
         if (N->layer[0].L.k >= 2)
             insert_at(N, 0);
         if (N->layer[N->depth - 1].L.k >= 2)
             insert_at(N, N->depth);
-        over_add_identities(N);
         N->early_done = 1;
-        N->locked = 0; /* allow later identity drops only */
+        N->locked = 1;
         return;
     }
     if (!N->early_done) return;
-    if (N->tick < N->last_change + SETTLE) return;
-    drop_identity_layer(N);
+    if ((N->par & PAR_D) && N->tick % 64 == 0) prune_small_w(N);
+    if ((N->par & PAR_E) && N->tick >= N->last_change + SETTLE) drop_dead_or(N);
+    if ((N->par & PAR_K) && N->tick >= N->last_change + SETTLE) grow_h_if_needed(N);
 }
 
 static void net_init(void *c)
@@ -436,18 +454,17 @@ static size_t net_kf(void *c)
 static size_t net_params(void *c)
 {
     PNet *N = c;
+    if ((N->par & PAR_D) && N->nnz_cap) return N->nnz_cap;
     size_t n = 0;
-    for (size_t i = 0; i < N->depth; i++)
-        n += N->layer[i].L.n_or * (N->layer[i].L.in + 1);
+    for (size_t i = 0; i < N->depth; i++) {
+        LKLayer *L = &N->layer[i].L;
+        n += L->n_or * (L->in + 1);
+    }
     return n;
 }
 static size_t net_nbytes(void *c)
 {
-    PNet *N = c;
-    size_t n = 0;
-    for (size_t i = 0; i < N->depth; i++)
-        n += N->layer[i].L.n_or * (N->layer[i].L.in + 2) * sizeof(double);
-    return n;
+    return net_params(c) * sizeof(double);
 }
 static void net_free(void *c)
 {
@@ -486,19 +503,17 @@ static size_t net_lk(void *c, size_t idx)
 static size_t net_nadd(void *c) { return ((PNet *)c)->n_add; }
 static size_t net_ndrop(void *c) { return ((PNet *)c)->n_drop; }
 
-AltNet type_nn_over_unused_open(size_t in, size_t out);
-
-AltNet type_nn_over_open(size_t in, size_t out)
+static AltNet par_open(const char *name, int par, size_t in, size_t out)
 {
     PNet *N = (PNet *)calloc(1, sizeof(PNet));
     N->dynamic = 1;
-    N->name = "type-nn-over";
+    N->par = par;
+    N->name = name;
     N->b1p = N->b2p = 1.0;
-    /* start as a single product layer; BP energy decides the rest */
     palloc(&N->layer[0], in, out, TNN_K0);
     N->depth = 1;
     AltNet h = {
-        .impl = "type-nn-over", .ctx = N, .in = in, .out = out,
+        .impl = name, .ctx = N, .in = in, .out = out,
         .init = net_init, .forward = net_fwd, .backward = net_bwd,
         .align_inputs = net_align, .set_outputs = net_out,
         .set_or_factors = net_k, .insert_identity = net_ins,
@@ -510,4 +525,19 @@ AltNet type_nn_over_open(size_t in, size_t out)
     };
     return h;
 }
+AltNet type_nn_pA_open(size_t in, size_t out) { return par_open("type-nn-pA", PAR_A, in, out); }
+AltNet type_nn_pD_open(size_t in, size_t out) { return par_open("type-nn-pD", PAR_D, in, out); }
+AltNet type_nn_pE_open(size_t in, size_t out) { return par_open("type-nn-pE", PAR_E, in, out); }
+AltNet type_nn_pK_open(size_t in, size_t out) { return par_open("type-nn-pK", PAR_K, in, out); }
+AltNet type_nn_pAD_open(size_t in, size_t out) { return par_open("type-nn-pAD", PAR_A|PAR_D, in, out); }
+AltNet type_nn_pAE_open(size_t in, size_t out) { return par_open("type-nn-pAE", PAR_A|PAR_E, in, out); }
+AltNet type_nn_pAK_open(size_t in, size_t out) { return par_open("type-nn-pAK", PAR_A|PAR_K, in, out); }
+AltNet type_nn_pDE_open(size_t in, size_t out) { return par_open("type-nn-pDE", PAR_D|PAR_E, in, out); }
+AltNet type_nn_pDK_open(size_t in, size_t out) { return par_open("type-nn-pDK", PAR_D|PAR_K, in, out); }
+AltNet type_nn_pEK_open(size_t in, size_t out) { return par_open("type-nn-pEK", PAR_E|PAR_K, in, out); }
+AltNet type_nn_pADE_open(size_t in, size_t out) { return par_open("type-nn-pADE", PAR_A|PAR_D|PAR_E, in, out); }
+AltNet type_nn_pADK_open(size_t in, size_t out) { return par_open("type-nn-pADK", PAR_A|PAR_D|PAR_K, in, out); }
+AltNet type_nn_pAEK_open(size_t in, size_t out) { return par_open("type-nn-pAEK", PAR_A|PAR_E|PAR_K, in, out); }
+AltNet type_nn_pDEK_open(size_t in, size_t out) { return par_open("type-nn-pDEK", PAR_D|PAR_E|PAR_K, in, out); }
+AltNet type_nn_pADEK_open(size_t in, size_t out) { return par_open("type-nn-pADEK", PAR_A|PAR_D|PAR_E|PAR_K, in, out); }
 

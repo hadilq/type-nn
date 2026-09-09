@@ -887,3 +887,57 @@ WDBC ~1969p. Torch-mlp wine is 16-wide ≈ 13×16+16×3 = **259p**.
 
 A, E, F, K are the ones that stay faithful to And/Or + scale/add/remove.
 C/D/I are layout/compression. B kills the product that makes XOR free.
+
+
+## A–K one at a time (`type-nn-pA` … `pK`)
+
+Same 70/30 as the board. G is the un-shrunk control (site roles).
+
+| tag | idea | wine hold_acc / params | iris hold_acc / params | keep? |
+|-----|------|------------------------|------------------------|-------|
+| A | small H | 0.963 / **111** | 0.956 / 75 | **yes** |
+| B | k=1 only | 0.37 / 275 | 0.29 / 67 | no (kills XOR + 3-class) |
+| C | bottleneck r≤8 | = A | = A | same as A |
+| D | prune \|W\|<0.03 | 0.963 / 234 | 0.978 / 106 | **yes** (params) |
+| E | merge/drop Or | **1.00 / 547** | 0.956 / 139 | **yes** (wine hold) |
+| F | drop dead k | = E | = E | same as E |
+| G | control | 0.926 / 819 | 0.978 / 211 | baseline |
+| H | thin in | = A | = A | same as A |
+| I | q8 nbytes | = G, nbytes=p | = G | no (count-only) |
+| J | tied readout | 0.35 / 787 | 0.27 / 195 | no |
+| K | start H=2, grow | 0.963 / **58** | **0.978 / 84** | **yes** (smallest) |
+
+Keep **A + D + E + K**. Drop B, J, I. C/H collapse to A; F to E.
+
+
+## Combinations of A, D, E, K
+
+Dropped B, C, F, G, H, I, J. Combinations use bit flags in `type_nn_par.c`.
+
+Wine / iris / iono / wdbc hold_acc and params (70/30):
+
+| impl | wine ha/p | iris ha/p | iono ha/p | wdbc ha/p |
+|------|-----------|-----------|-----------|-----------|
+| pA | 0.963/111 | 0.956/75 | 0.915/357 | 0.947/325 |
+| pD | 0.963/234 | **0.978**/106 | 0.925/888 | 0.971/556 |
+| pE | **1.00**/547 | 0.956/139 | 0.915/1465 | 0.947/1369 |
+| pK | 0.963/**78** | **0.978**/73 | 0.896/163 | 0.959/147 |
+| pAD | 0.944/58 | 0.956/61 | 0.925/95 | 0.965/80 |
+| pAE | **1.00**/91 | 0.956* | 0.915/321 | 0.942/289 |
+| pAK | 0.963/78 | **0.978**/73 | 0.896/163 | 0.959/147 |
+| pDE | **1.00**/259 | 0.956* | 0.906/401 | 0.953/331 |
+| **pDK** | 0.963/**54** | 0.956/55 | **0.943/79** | **0.977/30** |
+| pEK | **1.00/66** | 0.956* | 0.915/153 | 0.959/71 |
+| pADE | 0.981/71 | 0.956* | 0.906/164 | 0.959/83 |
+| **pADK** | 0.963/54 | 0.956/55 | **0.943/79** | **0.977/30** |
+| pAEK | **1.00/66** | 0.956* | 0.915/153 | 0.959/71 |
+| pDEK / pADEK | 0.981/**48** | 0.956* | 0.915/84 | 0.953/34 |
+| static | 0.963/819 | 0.956/211 | 0.877/2065 | **0.988**/1969 |
+
+\* E on iris drops *train* acc to ~0.80 (hold still 0.956).
+
+No single combo wins every file. Closest:
+
+- **pDK / pADK** — smallest that stays accurate on WDBC/iono (30–79p), wine hold 0.963
+- **pEK / pAEK** — wine hold **1.00** at 66p; iris train acc suffers
+- **pDEK** — tiniest wine 48p / hold 0.981

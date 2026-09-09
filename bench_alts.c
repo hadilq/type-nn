@@ -70,28 +70,6 @@ static double mse_of(AltNet *a, double **X, double **Y, size_t n)
     return acc / (double)(n * (a->out ? a->out : 1));
 }
 
-static double acc_of(AltNet *a, Dataset *ds)
-{
-    if (!ds->classification) return -1.0;
-    double *pred = (double *)calloc(a->out, sizeof(double));
-    size_t ok = 0;
-    for (size_t i = 0; i < ds->n; i++) {
-        a->forward(a->ctx, ds->X[i], pred);
-        if (ds->out == 1) {
-            if ((pred[0] >= 0.5) == (ds->Y[i][0] >= 0.5)) ok++;
-        } else {
-            size_t gp = 0, wp = 0;
-            for (size_t k = 1; k < ds->out; k++) {
-                if (pred[k] > pred[gp]) gp = k;
-                if (ds->Y[i][k] > ds->Y[i][wp]) wp = k;
-            }
-            if (gp == wp) ok++;
-        }
-    }
-    free(pred);
-    return (double)ok / (double)ds->n;
-}
-
 static double mse_idx(AltNet *a, Dataset *ds, const size_t *idx, size_t n)
 {
     if (!n) return 0.0;
@@ -172,7 +150,7 @@ static void bench_xor(AltNet (*open)(size_t, size_t))
     double *X[4], *Y[4];
     for (int i = 0; i < 4; i++) { X[i] = Xd[i]; Y[i] = Yd[i]; }
     AltNet a = open(2, 1);
-    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "type-nn-p") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
     run_xy("xor", &a, X, Y, 4, 400, 0.08, 20000, -1.0);
     a.free(a.ctx);
 }
@@ -191,7 +169,7 @@ static void bench_quadratic(AltNet (*open)(size_t, size_t))
         Y[i][0] = X[i][0] * X[i][1] + 0.25 * X[i][0];
     }
     AltNet a = open(2, 1);
-    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "type-nn-p") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
     run_xy("quadratic", &a, X, Y, N, 200, 0.04, 5000, -1.0);
     a.free(a.ctx);
     for (size_t i = 0; i < N; i++) { free(X[i]); free(Y[i]); }
@@ -213,7 +191,7 @@ static void bench_mlp(AltNet (*open)(size_t, size_t))
             Y[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.3;
     }
     AltNet a = open(IN, OUT);
-    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "type-nn-p") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
     run_xy("mlp32x16x8", &a, X, Y, N, 30, 0.01, 1000, -1.0);
     a.free(a.ctx);
     for (size_t i = 0; i < N; i++) { free(X[i]); free(Y[i]); }
@@ -238,7 +216,7 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     dataset_standardize_inputs(&ds);
     if (!ds.classification) dataset_minmax_outputs(&ds);
     AltNet a = open(ds.in, ds.out);
-    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
+    if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "type-nn-p") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
     srand(34972);
     a.init(a.ctx);
     size_t *perm = (size_t *)malloc(ds.n * sizeof(size_t));

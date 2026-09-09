@@ -409,15 +409,45 @@ extern AltNet type_nn_opt_open(size_t, size_t);
 extern AltNet type_nn_bpsite_open(size_t, size_t);
 extern AltNet type_nn_proj2_open(size_t, size_t);
 extern AltNet type_nn_over_open(size_t, size_t);
+extern AltNet type_nn_pA_open(size_t, size_t);
+extern AltNet type_nn_pD_open(size_t, size_t);
+extern AltNet type_nn_pE_open(size_t, size_t);
+extern AltNet type_nn_pK_open(size_t, size_t);
+extern AltNet type_nn_pAD_open(size_t, size_t);
+extern AltNet type_nn_pAE_open(size_t, size_t);
+extern AltNet type_nn_pAK_open(size_t, size_t);
+extern AltNet type_nn_pDE_open(size_t, size_t);
+extern AltNet type_nn_pDK_open(size_t, size_t);
+extern AltNet type_nn_pEK_open(size_t, size_t);
+extern AltNet type_nn_pADE_open(size_t, size_t);
+extern AltNet type_nn_pADK_open(size_t, size_t);
+extern AltNet type_nn_pAEK_open(size_t, size_t);
+extern AltNet type_nn_pDEK_open(size_t, size_t);
+extern AltNet type_nn_pADEK_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_opt_open,
     type_nn_bpsite_open,
     type_nn_proj2_open,
     type_nn_over_open,
+    type_nn_pA_open,
+    type_nn_pD_open,
+    type_nn_pE_open,
+    type_nn_pK_open,
+    type_nn_pAD_open,
+    type_nn_pAE_open,
+    type_nn_pAK_open,
+    type_nn_pDE_open,
+    type_nn_pDK_open,
+    type_nn_pEK_open,
+    type_nn_pADE_open,
+    type_nn_pADK_open,
+    type_nn_pAEK_open,
+    type_nn_pDEK_open,
+    type_nn_pADEK_open,
 };
 static const char *const NAMES[] = {
-    "type-nn-opt", "type-nn-bpsite", "type-nn-static", "type-nn-over",
+    "type-nn-opt", "type-nn-bpsite", "type-nn-static", "type-nn-over", "type-nn-pA", "type-nn-pD", "type-nn-pE", "type-nn-pK", "type-nn-pAD", "type-nn-pAE", "type-nn-pAK", "type-nn-pDE", "type-nn-pDK", "type-nn-pEK", "type-nn-pADE", "type-nn-pADK", "type-nn-pAEK", "type-nn-pDEK", "type-nn-pADEK",
 };
 
 size_t type_nn_alt_count(void)
