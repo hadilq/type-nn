@@ -286,3 +286,36 @@ int dataset_load_ionosphere(const char *path, Dataset *ds)
     ds->n = n;
     return n > 0 ? 0 : -1;
 }
+
+/* Portable xorshift32. Must match bench_torch.py:split_perm. */
+unsigned dataset_xorshift32(unsigned *state)
+{
+    unsigned x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+void dataset_perm(size_t n, unsigned seed, size_t *perm)
+{
+    for (size_t i = 0; i < n; i++) perm[i] = i;
+    unsigned s = seed ? seed : DATASET_SPLIT_SEED;
+    if (s == 0) s = 1;
+    for (size_t i = n; i > 1; i--) {
+        unsigned r = dataset_xorshift32(&s);
+        size_t j = (size_t)(r % (unsigned)i);
+        size_t tmp = perm[i - 1];
+        perm[i - 1] = perm[j];
+        perm[j] = tmp;
+    }
+}
+
+size_t dataset_ntrain(size_t n)
+{
+    size_t ntr = n * DATASET_TRAIN_NUM / DATASET_TRAIN_DEN;
+    if (ntr < 1) ntr = n;
+    if (ntr > n) ntr = n;
+    return ntr;
+}

@@ -362,53 +362,49 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
 {
     double *pred = (double *)calloc(a->out, sizeof(double));
     double *dy = (double *)calloc(a->out, sizeof(double));
+    size_t *ord = (size_t *)malloc(n * sizeof(size_t));
     for (size_t ep = 0; ep < epochs; ep++) {
+        for (size_t i = 0; i < n; i++) ord[i] = i;
+        /* Epoch order is a dedicated xorshift, not libc rand(), so every
+           impl sees the same permutation regardless of how many rand()
+           calls its init consumed. */
+        unsigned st = 34972u ^ (unsigned)((ep + 1u) * 0x9E3779B9u);
+        if (st == 0) st = 1;
+        for (size_t i = n; i > 1; i--) {
+            unsigned x = st;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            st = x;
+            size_t j = (size_t)(x % (unsigned)i);
+            size_t tmp = ord[i - 1];
+            ord[i - 1] = ord[j];
+            ord[j] = tmp;
+        }
         for (size_t s = 0; s < n; s++) {
-            if (a->align_inputs) {
-                /* width is fixed by X[s] length the caller owns; no-op here */
-            }
-            a->forward(a->ctx, X[s], pred);
+            size_t si = ord[s];
+            a->forward(a->ctx, X[si], pred);
             /* torch MSE grad is (pred-y)/out per channel (mean over elements).
                Without this, a 3-class head gets 3× the pull of WDBC's 1-class
                head and cannot drive the unused classes to 0 independently. */
             double inv = 1.0 / (double)(a->out ? a->out : 1);
             for (size_t k = 0; k < a->out; k++)
-                dy[k] = (pred[k] - Y[s][k]) * inv;
-            a->backward(a->ctx, X[s], dy, lr);
-            if (a->insert_identity && a->depth && a->depth(a->ctx) == 1) {
-                double mag = 0.0;
-                for (size_t i = 0; i < a->out; i++) mag += fabs(dy[i]);
-                /* honour set_dynamic(0): those impls keep depth==1 by not
-                   growing inside backward, and tests disable this via
-                   set_dynamic; we only insert when the residual is huge AND
-                   the impl left dynamic on (depth still 1 after backward's
-                   own policy). Disabled here — insert is explicit in tests.
-                   Kept as a hook so a future flag can re-enable it. */
-                (void)mag;
-            }
+                dy[k] = (pred[k] - Y[si][k]) * inv;
+            a->backward(a->ctx, X[si], dy, lr);
         }
     }
+    free(ord);
     free(pred);
     free(dy);
 }
 
-/* openers live in the per-layout files; registry is here. */
-extern AltNet type_nn_opt_open(size_t, size_t);
-extern AltNet type_nn_bpsite_open(size_t, size_t);
-extern AltNet type_nn_proj2_open(size_t, size_t);
-extern AltNet type_nn_over_open(size_t, size_t);
 extern AltNet type_nn_win_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
-    type_nn_opt_open,
-    type_nn_bpsite_open,
-    type_nn_proj2_open,
-    type_nn_over_open,
     type_nn_win_open,
 };
 static const char *const NAMES[] = {
-    "type-nn-opt", "type-nn-bpsite", "type-nn-static",
-    "type-nn-over", "type-nn-win",
+    "type-nn-win",
 };
 
 size_t type_nn_alt_count(void)

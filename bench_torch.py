@@ -306,6 +306,27 @@ def load_ionosphere(path: str):
     return standardize(torch.tensor(xs)), torch.tensor(ys)
 
 
+def xorshift32(state: int) -> int:
+    x = state & 0xFFFFFFFF
+    x ^= (x << 13) & 0xFFFFFFFF
+    x ^= (x >> 17) & 0xFFFFFFFF
+    x ^= (x << 5) & 0xFFFFFFFF
+    return x & 0xFFFFFFFF
+
+
+def split_perm(n: int, seed: int = 34972) -> list[int]:
+    """Same Fisher–Yates + xorshift32 as dataset_perm() in dataset.c."""
+    perm = list(range(n))
+    s = seed & 0xFFFFFFFF
+    if s == 0:
+        s = 1
+    for i in range(n, 1, -1):
+        s = xorshift32(s)
+        j = s % i
+        perm[i - 1], perm[j] = perm[j], perm[i - 1]
+    return perm
+
+
 def bench_real(kind: str, task: str, filename: str, loader, widths, epochs, lr, reps):
     path = find_data(filename)
     if path is None:
@@ -314,12 +335,13 @@ def bench_real(kind: str, task: str, filename: str, loader, widths, epochs, lr, 
     X, Y = loader(path)
     in_dim, out_dim = X.shape[1], Y.shape[1]
     n = X.shape[0]
-    g = torch.Generator().manual_seed(34972)
-    perm = torch.randperm(n, generator=g)
-    ntr = max(1, int(0.7 * n))
-    tr, te = perm[:ntr], perm[ntr:]
+    perm = split_perm(n, 34972)
+    ntr = max(1, (n * 7) // 10)
+    tr = torch.tensor(perm[:ntr], dtype=torch.long)
+    te = torch.tensor(perm[ntr:], dtype=torch.long)
     Xtr, Ytr = X[tr], Y[tr]
     Xte, Yte = X[te], Y[te]
+    torch.manual_seed(34972)
     if kind == "mlp":
         hid = widths[0]
         mod = MLP([in_dim, hid, out_dim])

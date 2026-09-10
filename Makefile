@@ -4,7 +4,7 @@ LDFLAGS ?= -lm
 
 .PHONY: all test test-asan test-alts demo bench data clean lean lean-clean
 
-ALTS = type_nn_stack.c type_nn_idins.c type_nn_bpsite.c type_nn_proj.c type_nn_over.c type_nn_win.c
+ALTS = type_nn_stack.c type_nn_win.c type_nn_cmlp.c
 
 
 all: type-nn test_type_nn

@@ -217,17 +217,13 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     if (!ds.classification) dataset_minmax_outputs(&ds);
     AltNet a = open(ds.in, ds.out);
     if (a.set_dynamic) a.set_dynamic(a.ctx, strstr(a.impl, "opt") != NULL || strstr(a.impl, "over") != NULL || strstr(a.impl, "type-nn-p") != NULL || strstr(a.impl, "win") != NULL || strstr(a.impl, "bpsite") != NULL || strncmp(a.impl, "type-nn-dyn", 11) == 0 || strstr(a.impl, "proj-dyn") != NULL || strstr(a.impl, "bpdyn") != NULL || strstr(a.impl, "bpgap") != NULL || strstr(a.impl, "bpcurv") != NULL || strstr(a.impl, "bpcombo") != NULL || strstr(a.impl, "bpcube") != NULL || strstr(a.impl, "bpwide") != NULL || strstr(a.impl, "bpsite") != NULL || strstr(a.impl, "bpearly") != NULL || strstr(a.impl, "bpdeep") != NULL || strstr(a.impl, "idi") != NULL || strstr(a.impl, "idfact") != NULL || strstr(a.impl, "idn") != NULL || strstr(a.impl, "idtgt") != NULL || strstr(a.impl, "idema") != NULL || strstr(a.impl, "idmax") != NULL || strstr(a.impl, "typefact") != NULL || strstr(a.impl, "adapt") != NULL || strstr(a.impl, "init2") != NULL || strstr(a.impl, "one") != NULL);
+    /* Split first — never after init — so every impl is judged on the
+       same 70/30 cut. Weight init may then use libc rand(). */
+    size_t *perm = (size_t *)malloc(ds.n * sizeof(size_t));
+    dataset_perm(ds.n, DATASET_SPLIT_SEED, perm);
+    size_t ntr = dataset_ntrain(ds.n);
     srand(34972);
     a.init(a.ctx);
-    size_t *perm = (size_t *)malloc(ds.n * sizeof(size_t));
-    for (size_t i = 0; i < ds.n; i++) perm[i] = i;
-    for (size_t i = ds.n; i > 1; i--) {
-        size_t j = (size_t)rand() % i;
-        size_t tmp = perm[i - 1]; perm[i - 1] = perm[j]; perm[j] = tmp;
-    }
-    size_t ntr = ds.n * 7 / 10;
-    if (ntr < 1) ntr = ds.n;
-    if (ntr > ds.n) ntr = ds.n;
     size_t nte = ds.n - ntr;
     double **Xtr = (double **)malloc(ntr * sizeof(double *));
     double **Ytr = (double **)malloc(ntr * sizeof(double *));
@@ -280,13 +276,23 @@ static int env_epochs(int def)
     return v > 0 ? v : def;
 }
 
+extern AltNet type_nn_cmlp_open(size_t, size_t);
+
 int main(int argc, char **argv)
 {
     const char *task = (argc > 1) ? argv[1] : "all";
     const char *only = (argc > 2) ? argv[2] : NULL;
-    for (size_t i = 0; i < type_nn_alt_count(); i++) {
-        if (only && strcmp(only, type_nn_alt_name(i)) != 0) continue;
-        AltNet (*open)(size_t, size_t) = type_nn_alt_opener(i);
+    for (size_t i = 0; i < type_nn_alt_count() + 1; i++) {
+        AltNet (*open)(size_t, size_t);
+        const char *name;
+        if (i < type_nn_alt_count()) {
+            name = type_nn_alt_name(i);
+            open = type_nn_alt_opener(i);
+        } else {
+            name = "c-mlp";
+            open = type_nn_cmlp_open;
+        }
+        if (only && strcmp(only, name) != 0) continue;
         if (!strcmp(task, "xor") || !strcmp(task, "all")) bench_xor(open);
         if (!strcmp(task, "quadratic") || !strcmp(task, "all")) bench_quadratic(open);
         if (!strcmp(task, "mlp32x16x8") || !strcmp(task, "all")) bench_mlp(open);

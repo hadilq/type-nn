@@ -1,0 +1,64 @@
+type-nn fair hold-out board
+===========================
+
+Split
+  xorshift32 Fisher-Yates, seed 34972, 70/30
+  dataset_perm() in dataset.c — same loop in bench_torch.py
+  computed BEFORE weight init
+  epoch order: xorshift32, seed 34972 xor (epoch+1)*0x9E3779B9
+
+Models
+  type-nn-win  And/Or product net. Starts k=2. Add/drop/widen from
+               ge/ae stall. No per-file recipe.
+  c-mlp        Linear-ReLU-Linear + Adam in C. H=8 if in<=4 else 16.
+               Fair twin of torch-mlp (same widths, same split).
+  torch-mlp    Same architecture in PyTorch, 1 CPU thread.
+               Times include the Python runtime.
+
+Tasks use the same epoch/lr schedule as bench_alts.c / bench_torch.py.
+
+--------------------------------------------------------------------------------
+task         impl          hold_acc    acc  params  nbytes  us/infer  train_s  ladd ldrop  hold_mse     mse  depth
+--------------------------------------------------------------------------------
+xor          type-nn-win      n/a    n/a      12      96     0.029   0.0002     1     0   0.00055  0.00055      2
+xor          c-mlp            n/a    n/a      33     264     0.039   0.0004     0     0   0.00000  0.00000      2
+xor          torch-mlp        n/a    n/a      33     132    22.478   0.1991     0     0   0.16667  0.16667      2
+
+iris         type-nn-win    0.978  0.981      50     400     0.071   0.0045     1     0   0.03271  0.03976      2
+iris         c-mlp          0.956  0.981      67     536     0.038   0.0461     0     0   0.03937  0.01826      2
+iris         torch-mlp      0.956  1.000      67     268    22.119   0.1010     0     0   0.02693  0.01294      2
+
+wine         type-nn-win    0.963  1.000      86     688     0.050   0.0056     1     0   0.08147  0.02361      2
+wine         c-mlp          0.981  1.000     275    2200     0.170   0.0661     0     0   0.03308  0.00753      2
+wine         torch-mlp      0.981  1.000     275    1100    20.358   0.0716     0     0   0.02281  0.00101      2
+
+wdbc         type-nn-win    0.942  0.980      68     544     0.045   0.0056     1     0   0.05955  0.03624      2
+wdbc         c-mlp          0.942  1.000     513    4104     0.188   0.3843     0     0   0.05226  0.00743      2
+wdbc         torch-mlp      0.947  0.995     513    2052    20.843   0.0316     0     0   0.04161  0.00894      2
+
+diabetes     type-nn-win      n/a    n/a      54     432     0.037   0.0073     1     0   0.03142  0.02753      2
+diabetes     c-mlp            n/a    n/a     193    1544     0.137   0.1258     0     0   0.04794  0.01657      2
+diabetes     torch-mlp        n/a    n/a     193     772    20.698   0.0544     0     0   0.03651  0.01856      2
+
+ionosphere   type-nn-win    0.925  0.971     150    1200     0.085   0.0091     1     0   0.12078  0.03856      2
+ionosphere   c-mlp          0.925  0.996     577    4616     0.246   0.1596     0     0   0.13378  0.01129      2
+ionosphere   torch-mlp      0.896  0.992     577    2308    20.832   0.0492     0     0   0.18058  0.01028      2
+--------------------------------------------------------------------------------
+
+Who wins each column
+  hold_acc / hold_mse
+    iris        type-nn-win  0.978  >  c-mlp = torch 0.956
+    wine        c-mlp = torch 0.981  >  type-nn-win 0.963   (52/54 vs 53/54)
+    wdbc        torch 0.947  ~  win = c-mlp 0.942
+    diabetes    type-nn-win hold_mse 0.031  <  torch 0.037  <  c-mlp 0.048
+    ionosphere  type-nn-win = c-mlp 0.925  >  torch 0.896
+    xor         c-mlp mse 0  ;  type-nn-win 5.5e-4  ;  torch 0.17
+  params        type-nn-win on every real file
+  us/infer      C nets; torch-mlp ~21 us is the Python runtime
+  train_s       type-nn-win vs c-mlp on every real file
+
+What the policy actually did (ladd)
+  Every real file added one layer: a k=1 basis in front of the product
+  once ge said the raw product was stalled. Width then grew only while
+  ge stayed above 0.08 and out < in (full column rank of a linear map).
+  No file used a hardcoded k=1/k=2/k=1 lock or a tick-16 commit.

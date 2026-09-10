@@ -16,7 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_idins.c type_nn_bpsite.c type_nn_proj.c type_nn_over.c type_nn_win.c"
+ALTS="type_nn_stack.c type_nn_win.c type_nn_cmlp.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
@@ -25,7 +25,7 @@ $CC $CFLAGS -o bench_alts bench_alts.c dataset.c $ALTS -lm
 echo "== type-nn (linked lists, frozen)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 ./bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
 
-echo "== type-nn-* layouts (arena soa gemm csr hotcold q8 tape opt) =="
+echo "== type-nn-win + c-mlp  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 ./bench_alts "$TASK" | tee /tmp/alt_bench.jsonl
 
 : > /tmp/torch_bench.jsonl
@@ -87,11 +87,10 @@ print("  • infer_s  = wall seconds for infer_n forward passes.")
 print("  • us/infer = infer_s / infer_n × 1e6  (microseconds per forward).")
 print("  • mse / acc      = 70% train split (XOR uses all 4 rows).")
 print("  • hold_mse / hold_acc = 30% never trained on (predictability).")
-print("  • ladd / ldrop = layers inserted / removed during train.")
-print("  • type-nn-static = fixed k=1 / k=2 / k=1 stack (was type-nn-proj2).")
-print("  • type-nn-opt    = unified dynamic policy.")
-print("  • type-nn-over   = over-add I-maps, drop only if W≈I.")
-print("  • type-nn-bpsite = early proj+readout from BP sites.")
-print("  • Board kept: opt, bpsite, static, over, win.")
+print("  • split          = xorshift32 Fisher-Yates, seed 34972, 7/10. Same in C and Python.")
+print("  • ladd / ldrop   = layers inserted / removed during train.")
+print("  • type-nn-win    = And/Or net; add/drop/widen from ge/ae stall.")
+print("  • c-mlp          = Linear-ReLU-Linear + Adam in C (fair torch-mlp twin).")
+print("  • torch-*        = same split; times include the Python runtime.")
 print("  • Sorted by (hold_acc desc, acc desc, params, nbytes, us/infer, train_s).")
 PY
