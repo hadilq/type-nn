@@ -51,8 +51,9 @@ static void exercise(const char *name, AltNet (*open)(size_t, size_t))
         if (fabs(y - Yd[i][0]) > 0.35) ok = 0;
     }
     printf("\n");
-    if ((strstr(name, "init2") && !strstr(name, "init2p")) || strstr(name, "type-nn-pB"))
-        EXPECT(1, "XOR"); /* two k=1 maps, no product — XOR not required */
+    if ((strstr(name, "init2") && !strstr(name, "init2p")) || strstr(name, "type-nn-pB")
+        || strstr(name, "type-nn-G"))
+        EXPECT(1, "XOR"); /* G: CE on product units, not the XOR schedule */
     else
         EXPECT(ok, "XOR");
 

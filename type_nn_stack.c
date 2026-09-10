@@ -399,12 +399,27 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
 }
 
 extern AltNet type_nn_win_open(size_t, size_t);
+extern AltNet type_nn_A_open(size_t, size_t);
+extern AltNet type_nn_B_open(size_t, size_t);
+extern AltNet type_nn_C_open(size_t, size_t);
+extern AltNet type_nn_D_open(size_t, size_t);
+extern AltNet type_nn_E_open(size_t, size_t);
+extern AltNet type_nn_F_open(size_t, size_t);
+extern AltNet type_nn_G_open(size_t, size_t);
+extern AltNet type_nn_H_open(size_t, size_t);
+extern AltNet type_nn_I_open(size_t, size_t);
 
 static AltNet (*const OPENERS[])(size_t, size_t) = {
     type_nn_win_open,
+    type_nn_A_open, type_nn_B_open, type_nn_C_open, type_nn_D_open,
+    type_nn_E_open, type_nn_F_open, type_nn_G_open, type_nn_H_open,
+    type_nn_I_open,
 };
 static const char *const NAMES[] = {
     "type-nn-win",
+    "type-nn-A", "type-nn-B", "type-nn-C", "type-nn-D",
+    "type-nn-E", "type-nn-F", "type-nn-G", "type-nn-H",
+    "type-nn-I",
 };
 
 size_t type_nn_alt_count(void)

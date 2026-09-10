@@ -4,16 +4,22 @@
 #include "type_nn_alt.h"
 
 /*
- * Dynamic Type-NN. Shape comes from back-prop energy, not a
- * per-file recipe.
- *
- *   Or_{i,r} = clip_O(b_{i,r} + Σ_j W_{i,r,j} x_j)
- *   And_i    = clip_A(Π_r Or_{i,r})
- *
- * Starts as one product layer (k = 2). After a short warmup, at most
- * one add / drop / widen / extra-factor per settle window.
+ * type-nn-win = F + H + site-local refuse.
+ *   F    revert a depth insert that does not drop EMA
+ *   H    grow k=1 width toward rank(in); stop when ge goes flat
+ *   rank unused column rank is spent before adding depth
+ *   no CE (G: Ands are not logits)
  */
 
 AltNet type_nn_win_open(size_t in, size_t out);
+AltNet type_nn_A_open(size_t in, size_t out);
+AltNet type_nn_B_open(size_t in, size_t out);
+AltNet type_nn_C_open(size_t in, size_t out);
+AltNet type_nn_D_open(size_t in, size_t out);
+AltNet type_nn_E_open(size_t in, size_t out);
+AltNet type_nn_F_open(size_t in, size_t out);
+AltNet type_nn_G_open(size_t in, size_t out);
+AltNet type_nn_H_open(size_t in, size_t out);
+AltNet type_nn_I_open(size_t in, size_t out);
 
 #endif

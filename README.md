@@ -14,36 +14,37 @@ only signals that back-prop already computes.
 
 Numbers for the fair hold-out live in [`BOARD.txt`](BOARD.txt).
 
-## Dynamic rule
+## Dynamic rule (what back-prop is allowed to change)
 
-No per-file recipe, no `tick == 16`, no locked `k=1 / k=2 / k=1` stack.
+Each layer already computes two scalars on the backward pass:
 
-After a short warmup (enough samples for an EMA to exist), at most one
-move per settle window:
+- `ge[i]` — EMA of mean `|dAnd|` arriving at layer `i` (error energy)
+- `ae[i]` — EMA of mean `|And|` leaving layer `i` (activity)
 
-| signal | move |
-|--------|------|
-| hidden layer is `k=1`, `W≈I`, tiny `ge` and `ae` | drop that layer |
-| extra Or factor with `‖W‖²` tiny and `k>2` | drop that factor |
-| residual EMA stalled above a floor | consider a grow/add |
-| a `k=1` layer has the highest `ge`, and the last width grow lowered `ge` | widen that layer by 1 |
-| a product (`k≥2`) still carries error | add an Or factor (`≈1`, so the And does not jump) |
-| interface `i` has the highest site score | insert a layer there |
+and the net keeps `ema`, the EMA of output energy: mean `|dY|` when
+`out = 1`, class margin `max(0, runner-up − winner + 1)` when `out > 1`
+(`|dY|` goes quiet once train acc is 1.0; margin does not).
 
-Site score uses only that layer's error energy `ge` and activity `ae`:
+At most one move per settle window, in this order:
 
-- in front of a product: `2·ge` (raw coordinates through a product)
-- after a product tail: `1.5·ge` (needs a linear mix of features)
-- between layers: `0.5·(ge_up + ge_down)·ge_up / (ae_down + ε)`
+1. Drop a hidden `k=1` map with `W≈I` and tiny `ge`, `ae`.
+2. Drop a dead extra Or (`k>2`, `‖W‖²` tiny).
+3. If a `k=1` map has unused column rank (`out < in`) and `ge` is still
+   falling, widen it by 1. Do not add depth while rank remains.
+4. If energy is stalled — and, once a hidden map exists, the *slope* of
+   `ema` is flat — insert at the highest-scoring interface. Snapshot
+   weights; revert the insert if `ema` does not drop.
 
-A new front/tail map is a fresh `k=1` affine whose width starts at
-`max(2, out)` and is then grown by `ge`, never past `in` (a linear map
-wider than its input is redundant). A mid-stack insert is identity, so
-the function does not jump. If an insert does not move the residual
-EMA, further inserts are refused.
+Site score is only `ge` / `ae`:
 
-XOR is not special-cased. It may pick up one basis layer if the first
-settle window still looks stalled; width then stops at `out == in`.
+- front of a product: `2·ge` (raw coordinates through a product)
+- after a product tail: `1.5·ge`
+- between layers: `0.5·(ge_up+ge_down)·ge_up/(ae_down+ε)`
+
+What we tried and rejected as *the* rule: CE on Ands (they are not
+logits), a forced readout before a basis (hurts wine), per-layer `lr∝ge`
+and residual-aligned new columns (hurt wide binary files). Those stay
+in `type-nn-A`…`I` for comparison.
 
 ## Fair split
 
