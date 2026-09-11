@@ -12,14 +12,15 @@
 #define LK_MAX_DEPTH 6
 
 typedef struct {
-    size_t in, out, k, n_or;
+    size_t in, out, k, R, n_or;
     double *W, *b, *or_val;
 } LKLayer;
 
 static inline void lk_alloc(LKLayer *L, size_t in, size_t out, size_t k)
 {
     L->in = in; L->out = out; L->k = k;
-    L->n_or = out * k;
+    if (!L->R) L->R = 1;
+    L->n_or = out * L->R * k;
     L->W = (double *)realloc(L->W, L->n_or * in * sizeof(double));
     L->b = (double *)realloc(L->b, L->n_or * sizeof(double));
     L->or_val = (double *)realloc(L->or_val, L->n_or * sizeof(double));
@@ -47,10 +48,14 @@ static inline void lk_identity(LKLayer *L)
     memset(L->W, 0, L->n_or * L->in * sizeof(double));
     memset(L->b, 0, L->n_or * sizeof(double));
     size_t n = L->in < L->out ? L->in : L->out;
+    size_t R = L->R ? L->R : 1, k = L->k;
     for (size_t i = 0; i < n; i++) {
-        L->W[(i * L->k + 0) * L->in + i] = 1.0;
-        if (L->k > 1) L->b[i * L->k + 1] = 1.0;
-        for (size_t t = 2; t < L->k; t++) L->b[i * L->k + t] = 1.0;
+        L->W[((i * R + 0) * k + 0) * L->in + i] = 1.0;
+        if (k > 1) L->b[(i * R + 0) * k + 1] = 1.0;
+        for (size_t t = 2; t < k; t++) L->b[(i * R + 0) * k + t] = 1.0;
+        for (size_t p = 1; p < R; p++)
+            for (size_t t = 0; t < k; t++)
+                L->b[(i * R + p) * k + t] = 1.0;
     }
 }
 
@@ -89,24 +94,27 @@ static inline void lk_fwd(LKLayer *L, const double *x, double *y)
             L->or_val[r] = tnn_clamp(acc, -TNN_ORCLIP, TNN_ORCLIP);
         }
     }
-    if (k == 2) {
-        for (size_t i = 0; i < out; i++)
-            y[i] = tnn_clamp(L->or_val[i*2]*L->or_val[i*2+1],
-                             -TNN_ANDCLIP, TNN_ANDCLIP);
-    } else {
-        for (size_t i = 0; i < out; i++) {
-            double p = 1.0;
-            for (size_t t = 0; t < k; t++) p *= L->or_val[i*k+t];
-            y[i] = tnn_clamp(p, -TNN_ANDCLIP, TNN_ANDCLIP);
+    size_t R = L->R ? L->R : 1;
+    for (size_t i = 0; i < out; i++) {
+        double acc = 1.0;
+        for (size_t p = 0; p < R; p++) {
+            double pr = 1.0;
+            size_t base = (i * R + p) * k;
+            for (size_t t = 0; t < k; t++) pr *= L->or_val[base + t];
+            acc *= pr;
         }
+        y[i] = tnn_clamp(acc, -TNN_ANDCLIP, TNN_ANDCLIP);
     }
 }
 
 /* d_or[t] = dy * Π_{u≠t} Or_u  computed with prefix/suffix, O(k) not O(k²). */
-static inline void lk_dor(const LKLayer *L, size_t i, double dy, double *dor)
+static inline void lk_dor_term(const LKLayer *L, size_t i, size_t p,
+                               double dy, double *dor)
 {
     const size_t k = L->k;
-    const double *ov = L->or_val + i * k;
+    size_t R = L->R ? L->R : 1;
+    if (p >= R) p = 0;
+    const double *ov = L->or_val + (i * R + p) * k;
     if (k == 2) {
         dor[0] = dy * ov[1];
         dor[1] = dy * ov[0];
@@ -128,6 +136,11 @@ static inline void lk_dor(const LKLayer *L, size_t i, double dy, double *dor)
     for (size_t t = 0; t < k; t++) dor[t] = dy * pre[t] * suf[t];
 }
 
+static inline void lk_dor(const LKLayer *L, size_t i, double dy, double *dor)
+{
+    lk_dor_term(L, i, 0, dy, dor);
+}
+
 static inline void lk_resize_in(LKLayer *L, size_t nin)
 {
     if (nin == L->in) return;
@@ -142,7 +155,8 @@ static inline void lk_resize_out(LKLayer *L, size_t nout)
 {
     if (nout == L->out) return;
     size_t k = L->k, in = L->in;
-    size_t n1 = nout * k, keep = (L->out < nout ? L->out : nout) * k;
+    size_t R = L->R ? L->R : 1;
+    size_t n1 = nout * R * k, keep = (L->out < nout ? L->out : nout) * R * k;
     double *nW = (double *)calloc(n1 * in, sizeof(double));
     double *nb = (double *)calloc(n1, sizeof(double));
     double *no = (double *)calloc(n1, sizeof(double));
@@ -161,23 +175,167 @@ static inline void lk_set_k(LKLayer *L, size_t nk)
 {
     if (nk < 1) nk = 1;
     if (nk == L->k) return;
-    size_t in = L->in, out = L->out, k0 = L->k, n1 = out * nk;
+    size_t in = L->in, out = L->out, k0 = L->k, R = L->R ? L->R : 1;
+    size_t n1 = out * R * nk;
     double *nW = (double *)calloc(n1 * in, sizeof(double));
     double *nb = (double *)calloc(n1, sizeof(double));
     double *no = (double *)calloc(n1, sizeof(double));
     size_t kc = k0 < nk ? k0 : nk;
     for (size_t i = 0; i < out; i++) {
-        for (size_t t = 0; t < kc; t++) {
-            memcpy(nW+(i*nk+t)*in, L->W+(i*k0+t)*in, in*sizeof(double));
-            nb[i*nk+t] = L->b[i*k0+t];
+        for (size_t p = 0; p < R; p++) {
+            for (size_t t = 0; t < kc; t++) {
+                memcpy(nW+((i*R+p)*nk+t)*in, L->W+((i*R+p)*k0+t)*in, in*sizeof(double));
+                nb[(i*R+p)*nk+t] = L->b[(i*R+p)*k0+t];
+            }
+            for (size_t t = kc; t < nk; t++) nb[(i*R+p)*nk+t] = 1.0;
         }
-        for (size_t t = kc; t < nk; t++) nb[i*nk+t] = 1.0;
     }
     free(L->W); free(L->b); free(L->or_val);
     L->W = nW; L->b = nb; L->or_val = no;
     L->k = nk; L->n_or = n1;
 }
 
+/* Extra And (product of Ors). New And ≡ 1: every Or is (b=1, W=0). */
+static inline void lk_set_R(LKLayer *L, size_t nR)
+{
+    if (nR < 1) nR = 1;
+    if (!L->R) L->R = 1;
+    if (nR == L->R) return;
+    size_t in = L->in, out = L->out, k = L->k, R0 = L->R;
+    size_t n1 = out * nR * k;
+    double *nW = (double *)calloc(n1 * in, sizeof(double));
+    double *nb = (double *)calloc(n1, sizeof(double));
+    double *no = (double *)calloc(n1, sizeof(double));
+    size_t Rc = R0 < nR ? R0 : nR;
+    for (size_t i = 0; i < out; i++) {
+        for (size_t p = 0; p < Rc; p++) {
+            for (size_t t = 0; t < k; t++) {
+                memcpy(nW+((i*nR+p)*k+t)*in, L->W+((i*R0+p)*k+t)*in, in*sizeof(double));
+                nb[(i*nR+p)*k+t] = L->b[(i*R0+p)*k+t];
+            }
+        }
+        for (size_t p = Rc; p < nR; p++)
+            for (size_t t = 0; t < k; t++)
+                nb[(i*nR+p)*k+t] = 1.0;
+    }
+    free(L->W); free(L->b); free(L->or_val);
+    L->W = nW; L->b = nb; L->or_val = no;
+    L->R = nR; L->n_or = n1;
+}
+
+
+static inline int lk_or_is_ones(const LKLayer *L, size_t r)
+{
+    if (fabs(L->b[r] - 1.0) > 0.2) return 0;
+    for (size_t j = 0; j < L->in; j++)
+        if (fabs(L->W[r * L->in + j]) > 0.2) return 0;
+    return 1;
+}
+
+static inline int lk_or_is_dead(const LKLayer *L, size_t r)
+{
+    if (fabs(L->b[r]) > 0.05) return 0;
+    for (size_t j = 0; j < L->in; j++)
+        if (fabs(L->W[r * L->in + j]) > 0.05) return 0;
+    return 1;
+}
+
+static inline int lk_and_is_ones(const LKLayer *L, size_t i, size_t p)
+{
+    size_t R = L->R ? L->R : 1;
+    for (size_t t = 0; t < L->k; t++)
+        if (!lk_or_is_ones(L, (i * R + p) * L->k + t)) return 0;
+    return 1;
+}
+
+static inline void lk_paint_or_ones(LKLayer *L, size_t r)
+{
+    L->b[r] = 1.0;
+    if (L->in) memset(L->W + r * L->in, 0, L->in * sizeof(double));
+}
+
+static inline void lk_paint_dummies(LKLayer *L)
+{
+    size_t R = L->R ? L->R : 1;
+    if (!L->k || !L->out) return;
+    for (size_t i = 0; i < L->out; i++) {
+        for (size_t p = 0; p < R; p++)
+            lk_paint_or_ones(L, (i * R + p) * L->k + (L->k - 1));
+        if (R >= 2)
+            for (size_t t = 0; t < L->k; t++)
+                lk_paint_or_ones(L, (i * R + (R - 1)) * L->k + t);
+    }
+}
+
+static inline void lk_ensure_or_dummy(LKLayer *L, unsigned *or_add)
+{
+    size_t R = L->R ? L->R : 1;
+    if (L->k < 1) return;
+    int has = 0;
+    for (size_t i = 0; i < L->out && !has; i++)
+        for (size_t p = 0; p < R; p++)
+            if (lk_or_is_ones(L, (i * R + p) * L->k + (L->k - 1))) has = 1;
+    if (!has && L->k < TNN_MAX_OR) {
+        lk_set_k(L, L->k + 1);
+        R = L->R ? L->R : 1;
+        for (size_t i = 0; i < L->out; i++)
+            for (size_t p = 0; p < R; p++)
+                lk_paint_or_ones(L, (i * R + p) * L->k + (L->k - 1));
+        if (or_add) (*or_add)++;
+    }
+}
+
+static inline void lk_prune_or_dummy(LKLayer *L, unsigned *or_drop)
+{
+    size_t R = L->R ? L->R : 1;
+    if (L->k <= 2) return;
+    int last_id = 1, extra = 0, last_dead = 1;
+    for (size_t i = 0; i < L->out; i++) {
+        for (size_t p = 0; p < R; p++) {
+            size_t last = (i * R + p) * L->k + (L->k - 1);
+            if (!lk_or_is_ones(L, last)) last_id = 0;
+            if (!lk_or_is_dead(L, last)) last_dead = 0;
+            for (size_t t = 0; t + 1 < L->k; t++)
+                if (lk_or_is_ones(L, (i * R + p) * L->k + t)) extra = 1;
+        }
+    }
+    if ((last_id && extra) || (last_dead && !last_id)) {
+        lk_set_k(L, L->k - 1);
+        if (or_drop) (*or_drop)++;
+    }
+}
+
+static inline void lk_ensure_and_dummy(LKLayer *L, unsigned *and_add)
+{
+    size_t R = L->R ? L->R : 1;
+    if (!L->out) return;
+    int has = 0;
+    for (size_t i = 0; i < L->out; i++)
+        if (lk_and_is_ones(L, i, R - 1)) has = 1;
+    if (!has && R < 4) {
+        lk_set_R(L, R + 1);
+        for (size_t i = 0; i < L->out; i++)
+            for (size_t t = 0; t < L->k; t++)
+                lk_paint_or_ones(L, (i * L->R + (L->R - 1)) * L->k + t);
+        if (and_add) (*and_add)++;
+    }
+}
+
+static inline void lk_prune_and_dummy(LKLayer *L, unsigned *and_drop)
+{
+    size_t R = L->R ? L->R : 1;
+    if (R <= 1) return;
+    int last_id = 1, extra = 0;
+    for (size_t i = 0; i < L->out; i++) {
+        if (!lk_and_is_ones(L, i, R - 1)) last_id = 0;
+        for (size_t p = 0; p + 1 < R; p++)
+            if (lk_and_is_ones(L, i, p)) extra = 1;
+    }
+    if (last_id && extra) {
+        lk_set_R(L, R - 1);
+        if (and_drop) (*and_drop)++;
+    }
+}
 
 static inline void lk_scale_arr(LKLayer *L, size_t depth, size_t idx, size_t in, size_t out)
 {

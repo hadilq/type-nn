@@ -47,6 +47,11 @@ struct AltNet {
     size_t (*layer_k)(void *ctx, size_t idx);
     size_t (*n_add)(void *ctx);
     size_t (*n_drop)(void *ctx);
+    void   (*set_corpus)(void *ctx, size_t n);
+    size_t (*or_add)(void *ctx);
+    size_t (*or_drop)(void *ctx);
+    size_t (*and_add)(void *ctx);
+    size_t (*and_drop)(void *ctx);
 };
 
 #define TNN_SNAP_MAX 8

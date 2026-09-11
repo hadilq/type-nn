@@ -363,6 +363,7 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
     double *pred = (double *)calloc(a->out, sizeof(double));
     double *dy = (double *)calloc(a->out, sizeof(double));
     size_t *ord = (size_t *)malloc(n * sizeof(size_t));
+    if (a->set_corpus) a->set_corpus(a->ctx, n);
     for (size_t ep = 0; ep < epochs; ep++) {
         for (size_t i = 0; i < n; i++) ord[i] = i;
         /* Epoch order is a dedicated xorshift, not libc rand(), so every
@@ -389,7 +390,7 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
                head and cannot drive the unused classes to 0 independently. */
             double inv = 1.0 / (double)(a->out ? a->out : 1);
             for (size_t k = 0; k < a->out; k++)
-                dy[k] = (pred[k] - Y[si][k]) * inv;
+                dy[k] = tnn_huber(pred[k] - Y[si][k]) * inv;
             a->backward(a->ctx, X[si], dy, lr);
         }
     }

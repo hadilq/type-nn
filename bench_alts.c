@@ -37,6 +37,7 @@ static void emit(const char *impl, const char *task,
                  size_t n, double acc, size_t depth,
                  double dyn_scale, int dyn_depth, long dyn_params,
                  long layer_add, long layer_drop,
+                 long or_add, long or_drop, long and_add, long and_drop,
                  double hold_mse, double hold_acc)
 {
     double us = infer_n ? infer_s * 1e6 / (double)infer_n : 0.0;
@@ -46,10 +47,12 @@ static void emit(const char *impl, const char *task,
            "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
            "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
            "\"layer_add\":%ld,\"layer_drop\":%ld,"
+           "\"or_add\":%ld,\"or_drop\":%ld,\"and_add\":%ld,\"and_drop\":%ld,"
            "\"hold_mse\":%.8f,\"hold_acc\":%.6f}\n",
            impl, task, train_s, infer_s, infer_n, us,
            rss_kb(), rss_kb(), params, nbytes, mse, depth, n, acc,
            dyn_scale, dyn_depth, dyn_params, layer_add, layer_drop,
+           or_add, or_drop, and_add, and_drop,
            hold_mse, hold_acc);
 }
 
@@ -136,11 +139,15 @@ static void run_xy(const char *task, AltNet *a, double **X, double **Y,
     size_t depth = a->depth ? a->depth(a->ctx) : 1;
     long ladd = a->n_add ? (long)a->n_add(a->ctx) : 0;
     long ldrop = a->n_drop ? (long)a->n_drop(a->ctx) : 0;
+    long oa = a->or_add ? (long)a->or_add(a->ctx) : 0;
+    long od = a->or_drop ? (long)a->or_drop(a->ctx) : 0;
+    long aa = a->and_add ? (long)a->and_add(a->ctx) : 0;
+    long ad = a->and_drop ? (long)a->and_drop(a->ctx) : 0;
     double m = mse_of(a, X, Y, n);
     emit(a->impl, task, train_s, infer_s, reps,
          a->param_count(a->ctx), a->nbytes(a->ctx),
          m, n, acc, depth, dyn_scale, dyn_depth, dyn_params,
-         ladd, ldrop, m, acc);
+         ladd, ldrop, oa, od, aa, ad, m, acc);
 }
 
 static void bench_xor(AltNet (*open)(size_t, size_t))
@@ -256,6 +263,10 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     {
         long ladd = a.n_add ? (long)a.n_add(a.ctx) : 0;
         long ldrop = a.n_drop ? (long)a.n_drop(a.ctx) : 0;
+        long oa = a.or_add ? (long)a.or_add(a.ctx) : 0;
+        long od = a.or_drop ? (long)a.or_drop(a.ctx) : 0;
+        long aa = a.and_add ? (long)a.and_add(a.ctx) : 0;
+        long ad = a.and_drop ? (long)a.and_drop(a.ctx) : 0;
         double tr_mse = mse_idx(&a, &ds, perm, ntr);
         double te_mse = nte ? mse_idx(&a, &ds, perm + ntr, nte) : tr_mse;
         double tr_acc = acc_idx(&a, &ds, perm, ntr);
@@ -264,7 +275,7 @@ static void bench_real(AltNet (*open)(size_t, size_t),
              a.param_count(a.ctx), a.nbytes(a.ctx),
              tr_mse, ds.n, tr_acc,
              a.depth ? a.depth(a.ctx) : 1, dyn_scale, dyn_depth, dyn_params,
-             ladd, ldrop, te_mse, te_acc);
+             ladd, ldrop, oa, od, aa, ad, te_mse, te_acc);
     }
     free(Xtr); free(Ytr); free(perm);
     a.free(a.ctx);

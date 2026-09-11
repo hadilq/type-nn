@@ -48,6 +48,7 @@ typedef struct AndNode {
     double quantization;
     struct OrNode *or_row;
     size_t right_index;
+    int probe_cool;
     struct AndNode *right;
 } AndNode;
 
@@ -85,11 +86,15 @@ typedef struct {
     Layer  *tail;
     size_t  depth;
     double  lr;
-    int     dynamic;     /* enable grow / shrink / insert / drop */
+    int     dynamic;     /* Or / And probes */
+    int     layer_probe; /* 0 = no automatic layer insert (original) */
     size_t  max_depth;
     size_t  max_or;
     double  quantization;
     int     verbose;
+    unsigned or_add, or_drop;
+    unsigned and_add, and_drop;
+    unsigned layer_add, layer_drop;
 } Network;
 
 /* ── print helpers ── */
@@ -105,6 +110,7 @@ void     network_free(Network *net);
 void     network_add_layer(Network *net, size_t in, size_t out);
 void     network_set_learning_rate(Network *net, double lr);
 void     network_set_dynamic(Network *net, int enabled);
+void     network_set_layer_probe(Network *net, int enabled);
 void     network_set_verbose(Network *net, int enabled);
 size_t   network_depth(const Network *net);
 

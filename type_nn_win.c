@@ -2,22 +2,11 @@
 #include "type_nn_layerkit.h"
 
 /*
- * Shared And/Or engine. Policies:
- *   win  general BP recipe:
- *        F revert a depth insert that does not drop energy
- *        H grow k=1 width toward rank(in); stop on flat ge
- *        rank unused columns before new depth
- *        B slope-stall only once a hidden map exists
- *        D energy = class margin when out>1 (|dY| dies after acc=1)
- *   A    refuse only the site that just failed
- *   B    insert only on a flat EMA slope (true stall)
- *   C    width / k / depth are separate gates, not one score fight
- *   D    stall energy is class margin when out > 1
- *   E    tail insert is identity (function does not jump)
- *   F    snapshot, train one settle, revert if EMA did not drop
- *   G    softmax + cross-entropy gradient (MSE dy is decoded)
- *   H    grow width toward rank(in), stop when ge goes flat
- *   I    out>1 ⇒ product is features, not class scores (readout)
+ * type-nn-B — the published controller.
+ *
+ * Insert only when the residual EMA slope is flat across two settle
+ * windows (true stall). Width / k / depth still follow ge and ae.
+ * Ablations A, C–I and the old "win" combo have been removed.
  */
 
 #define AD_B1   0.9
@@ -32,18 +21,21 @@
 #define ID_TAU    0.08
 #define W_PRUNE   0.03
 #define MAX_H     32
-#define MAX_K     4
+#define MAX_K     TNN_MAX_OR
+#define MAX_R     4
+#define ONES_TAU  0.2
+#define DEAD_TAU  0.05
 
 enum {
-    POL_WIN = 0,
-    POL_A, POL_B, POL_C, POL_D, POL_E,
-    POL_F, POL_G, POL_H, POL_I
+    POL_B = 0,
+    POL_A = 1, POL_C = 2, POL_D = 3, POL_E = 4,
+    POL_F = 5, POL_G = 6, POL_H = 7, POL_I = 8, POL_WIN = 9
 };
 
 typedef struct {
     LKLayer L;
     double *mW, *vW, *mb, *vb, *aW, *ab;
-    int freeze_col, pending;
+    int freeze_col, pending, probe_cool;
     double ge, ae;
 } PLayer;
 
@@ -60,9 +52,10 @@ typedef struct {
     PLayer  layer[LK_MAX_DEPTH];
     double *act[LK_MAX_DEPTH + 1];
     size_t  act_w[LK_MAX_DEPTH + 1];
-    size_t  depth, task_out;
+    size_t  depth, task_out, n_train;
     int     dynamic, policy;
     unsigned n_add, n_drop;
+    unsigned or_add, or_drop, and_add, and_drop;
     unsigned tick, last_change, settle_n;
     double  ema, ema_ref, ge_ref, ema_hist;
     int     refuse_insert, refuse_grow;
@@ -78,13 +71,7 @@ typedef struct {
 
 static int combo(const PNet *N) { return N->policy == POL_WIN; }
 static int uses_trial(const PNet *N) { return N->policy == POL_F || combo(N); }
-static int uses_ce(const PNet *N)
-{
-    /* CE on And-scores exploded hold MSE in G. Only G keeps it;
-       the winner trains MSE on the I readout. */
-    (void)N;
-    return 0;
-}
+static int uses_ce(const PNet *N) { (void)N; return 0; }
 
 static void psync(PLayer *P)
 {
@@ -111,8 +98,12 @@ static void psync(PLayer *P)
 static void palloc(PLayer *P, size_t in, size_t out, size_t k)
 {
     lk_alloc(&P->L, in, out, k);
+    if (P->L.k < 3) lk_set_k(&P->L, P->L.k + 1);
+    if (!P->L.R || P->L.R < 2) lk_set_R(&P->L, 2);
+    lk_paint_dummies(&P->L);
     psync(P);
     P->freeze_col = 0;
+    P->probe_cool = 0;
     P->ge = P->ae = 0.0;
 }
 
@@ -138,6 +129,9 @@ static double ad(double *m, double *v, double g, double lr, double b1p, double b
     return lr * (*m / (1.0 - b1p)) / (sqrt(*v / (1.0 - b2p)) + AD_EPS);
 }
 
+static void probe_prune(PNet *N, PLayer *P);
+static int is_dummy_row(const LKLayer *L, size_t r);
+
 static void flush_layer(PNet *N, PLayer *P, double lr)
 {
     if (P->pending <= 0) return;
@@ -149,6 +143,11 @@ static void flush_layer(PNet *N, PLayer *P, double lr)
     N->b1p *= AD_B1;
     N->b2p *= AD_B2;
     for (size_t r = 0; r < L->n_or; r++) {
+        if (is_dummy_row(L, r)) {
+            P->ab[r] = 0.0;
+            if (in) memset(P->aW + r * in, 0, in * sizeof(double));
+            continue;
+        }
         double gb = P->ab[r] * inv;
         L->b[r] = tnn_clamp(L->b[r] - ad(&P->mb[r], &P->vb[r], gb, lr, N->b1p, N->b2p),
                             -TNN_WCLIP, TNN_WCLIP);
@@ -164,35 +163,187 @@ static void flush_layer(PNet *N, PLayer *P, double lr)
         }
     }
     P->pending = 0;
+    if (N->dynamic) probe_prune(N, P);
+}
+
+static int lk_factor_ones(const LKLayer *L, size_t r)
+{
+    if (fabs(L->b[r] - 1.0) > ONES_TAU) return 0;
+    for (size_t j = 0; j < L->in; j++)
+        if (fabs(L->W[r * L->in + j]) > ONES_TAU) return 0;
+    return 1;
+}
+
+static int lk_factor_dead(const LKLayer *L, size_t r)
+{
+    if (fabs(L->b[r]) > DEAD_TAU) return 0;
+    for (size_t j = 0; j < L->in; j++)
+        if (fabs(L->W[r * L->in + j]) > DEAD_TAU) return 0;
+    return 1;
+}
+
+static int lk_and_ones(const LKLayer *L, size_t i, size_t p)
+{
+    size_t R = L->R ? L->R : 1;
+    for (size_t t = 0; t < L->k; t++)
+        if (!lk_factor_ones(L, (i * R + p) * L->k + t)) return 0;
+    return 1;
+}
+
+static void paint_factor_ones(LKLayer *L, size_t r)
+{
+    L->b[r] = 1.0;
+    if (L->in) memset(L->W + r * L->in, 0, L->in * sizeof(double));
+}
+
+static int is_dummy_row(const LKLayer *L, size_t r)
+{
+    size_t R = L->R ? L->R : 1, k = L->k;
+    if (!k || !R) return 0;
+    size_t term = r / k;
+    size_t t = r % k;
+    size_t p = term % R;
+    return (t + 1 == k) || (p + 1 == R);
+}
+
+/* Original type-nn: one identity Or and one identity And in the product
+   before the step. After the step, drop extra identities; keep one. */
+static void probe_ensure(PNet *N, PLayer *P)
+{
+    if (P->probe_cool > 0) { P->probe_cool--; return; }
+    LKLayer *L = &P->L;
+    size_t R = L->R ? L->R : 1;
+    int missing_or = 0;
+    for (size_t i = 0; i < L->out; i++)
+        for (size_t p = 0; p < R; p++)
+            if (L->k < 1 || !lk_factor_ones(L, (i * R + p) * L->k + (L->k - 1)))
+                missing_or = 1;
+    if (missing_or && L->k < MAX_K) {
+        lk_set_k(L, L->k + 1);
+        psync(P);
+        L = &P->L;
+        R = L->R ? L->R : 1;
+        for (size_t i = 0; i < L->out; i++)
+            for (size_t p = 0; p < R; p++)
+                paint_factor_ones(L, (i * R + p) * L->k + (L->k - 1));
+        N->or_add++;
+        P->probe_cool = 32;
+    }
+    R = L->R ? L->R : 1;
+    int missing_and = (R < 1);
+    for (size_t i = 0; i < L->out; i++)
+        if (R < 1 || !lk_and_ones(L, i, R - 1)) missing_and = 1;
+    if (missing_and && R < MAX_R) {
+        lk_set_R(L, R + 1);
+        psync(P);
+        L = &P->L;
+        for (size_t i = 0; i < L->out; i++)
+            for (size_t t = 0; t < L->k; t++)
+                paint_factor_ones(L, (i * L->R + (L->R - 1)) * L->k + t);
+        N->and_add++;
+        P->probe_cool = 32;
+    }
+}
+
+static void probe_prune(PNet *N, PLayer *P)
+{
+    if (P->probe_cool > 0) return;
+    LKLayer *L = &P->L;
+    size_t R = L->R ? L->R : 1;
+    if (L->k > 2) {
+        int last_id = 1, last_dead = 1, extra = 0;
+        for (size_t i = 0; i < L->out; i++) {
+            for (size_t p = 0; p < R; p++) {
+                size_t last = (i * R + p) * L->k + (L->k - 1);
+                if (!lk_factor_ones(L, last)) last_id = 0;
+                if (!lk_factor_dead(L, last)) last_dead = 0;
+                for (size_t t = 0; t + 1 < L->k; t++)
+                    if (lk_factor_ones(L, (i * R + p) * L->k + t)) extra = 1;
+            }
+        }
+        if (extra && (last_id || last_dead)) {
+            lk_set_k(L, L->k - 1);
+            psync(P);
+            N->or_drop++;
+            P->probe_cool = 32;
+            return;
+        }
+    }
+    R = L->R ? L->R : 1;
+    if (R > 1) {
+        int last_id = 1, extra = 0;
+        for (size_t i = 0; i < L->out; i++) {
+            if (!lk_and_ones(L, i, R - 1)) last_id = 0;
+            for (size_t p = 0; p + 1 < R; p++)
+                if (lk_and_ones(L, i, p)) extra = 1;
+        }
+        if (last_id && extra) {
+            lk_set_R(L, R - 1);
+            psync(P);
+            N->and_drop++;
+            P->probe_cool = 32;
+        }
+    }
 }
 
 static void upd(PNet *N, PLayer *P, const double *x, const double *dy,
                 double *dx, double lr)
 {
     LKLayer *L = &P->L;
+    if (N->dynamic) probe_ensure(N, P);
+    L = &P->L;
     const size_t in = L->in, k = L->k, out = L->out;
     if (dx) memset(dx, 0, in * sizeof(double));
     double dor[8];
     double e = 0.0;
+    size_t R = L->R ? L->R : 1;
     for (size_t i = 0; i < out; i++) {
         e += fabs(dy[i]);
-        lk_dor(L, i, dy[i], dor);
+        double tp[8];
+        double yprod = 1.0;
+        for (size_t p = 0; p < R && p < 8; p++) {
+            double pr = 1.0;
+            size_t base = (i * R + p) * k;
+            for (size_t t = 0; t < k; t++) pr *= L->or_val[base + t];
+            tp[p] = pr;
+            yprod *= pr;
+        }
+        for (size_t p = 0; p < R; p++) {
+        double yg = yprod;
+        if (yg > TNN_ANDCLIP) yg = TNN_ANDCLIP;
+        if (yg < -TNN_ANDCLIP) yg = -TNN_ANDCLIP;
+        double d_and = dy[i] * tnn_clip_gate(yg, TNN_ANDCLIP)
+                       * ((p < 8 && fabs(tp[p]) > 1e-12) ? yprod / tp[p] : 0.0);
+        lk_dor_term(L, i, p, d_and, dor);
         for (size_t t = 0; t < k; t++) {
-            double g = dor[t];
-            size_t r = i * k + t;
+            size_t r = (i * R + p) * k + t;
+            double g = dor[t] * tnn_clip_gate(L->or_val[r], TNN_ORCLIP);
             if (dx) {
                 const double *w = L->W + r * in;
                 for (size_t j = 0; j < in; j++) dx[j] += g * w[j];
             }
-            P->ab[r] += g;
-            for (size_t j = 0; j < in; j++)
-                P->aW[r * in + j] += g * x[j];
+            if (is_dummy_row(L, r)) {
+                /* Original: SGD the dummy every sample so it can leave 1. */
+                /* One step cannot jump 1 → 0. Dummy walks off identity. */
+                if (g > 2.0) g = 2.0;
+                if (g < -2.0) g = -2.0;
+                L->b[r] = tnn_clamp(L->b[r] - lr * g, -TNN_WCLIP, TNN_WCLIP);
+                for (size_t j = 0; j < in; j++)
+                    L->W[r * in + j] = tnn_clamp(L->W[r * in + j] - lr * g * x[j],
+                                                 -TNN_WCLIP, TNN_WCLIP);
+            } else {
+                P->ab[r] += g;
+                for (size_t j = 0; j < in; j++)
+                    P->aW[r * in + j] += g * x[j];
+            }
+        }
         }
     }
     e /= (double)(out ? out : 1);
     P->ge = (P->ge == 0.0) ? e : (0.9 * P->ge + 0.1 * e);
     P->pending++;
     if (P->pending >= 16) flush_layer(N, P, lr);
+    if (N->dynamic) probe_prune(N, P);
 }
 
 static size_t seed_width(size_t out)
@@ -296,9 +447,18 @@ static void mark_change(PNet *N, int kind, int site)
         if (N->layer[i].ge > N->ge_ref) N->ge_ref = N->layer[i].ge;
 }
 
+static size_t depth_cap(const PNet *N)
+{
+    size_t n = N->n_train ? N->n_train : 2;
+    size_t bits = 0;
+    while (bits < 8 && ((size_t)1 << bits) < n) bits++;
+    return bits + 1; /* 1 + floor(log2 n) */
+}
+
 static void insert_at(PNet *N, size_t idx)
 {
     if (N->depth >= LK_MAX_DEPTH) return;
+    if (N->policy == POL_B && N->depth >= depth_cap(N)) return;
     if (idx > N->depth) idx = N->depth;
 
     if (uses_trial(N) && !N->skip_trial) trial_save(N);
@@ -392,23 +552,8 @@ static int drop_idle_hidden(PNet *N)
 
 static int drop_dead_or(PNet *N)
 {
-    for (size_t i = 0; i < N->depth; i++) {
-        LKLayer *L = &N->layer[i].L;
-        if (L->k <= 2) continue;
-        int any = 0;
-        for (size_t o = 0; o < L->out; o++) {
-            double *w = L->W + ((o * L->k) + (L->k - 1)) * L->in;
-            double n2 = 0.0;
-            for (size_t j = 0; j < L->in; j++) n2 += w[j] * w[j];
-            if (n2 < 0.01) any = 1;
-        }
-        if (!any) continue;
-        lk_set_k(L, L->k - 1);
-        psync(&N->layer[i]);
-        N->n_drop++;
-        mark_change(N, 0, -1);
-        return 1;
-    }
+    /* Dummy last-factor has W=0 by design. Prune is probe_prune. */
+    (void)N;
     return 0;
 }
 
@@ -441,6 +586,7 @@ static int grow_width(PNet *N)
         psync(&N->layer[best + 1]);
     }
     mark_change(N, 2, best);
+    N->and_add++;
     N->pending_trial = uses_trial(N) && !combo(N) && !N->skip_trial;
     return 1;
 }
@@ -460,6 +606,7 @@ static int grow_k(PNet *N)
     if (uses_trial(N) && !N->skip_trial) trial_save(N);
     lk_set_k(&N->layer[best].L, N->layer[best].L.k + 1);
     psync(&N->layer[best]);
+    N->or_add++;
     mark_change(N, 0, -1);
     N->pending_trial = uses_trial(N) && !N->skip_trial;
     return 1;
@@ -566,7 +713,12 @@ static void estimate_and_apply(PNet *N)
         double prev = (N->ema_hist > 0.0) ? N->ema_hist : N->ema;
         double rel = fabs(N->ema - prev) / (prev > 1e-6 ? prev : 1e-6);
         N->ema_hist = N->ema;
-        stalled = (N->settle_n >= 2) && (rel < 0.05) && (N->ema > EMA_FLOOR);
+        /* τ shrinks on small corpora: a settle window of SETTLE steps
+           revisits each of n rows SETTLE/n times, so tiny files look
+           flat under a fixed 0.05. τ = 0.05 · n/(n+SETTLE). */
+        size_t nn = N->n_train ? N->n_train : (N->tick ? N->tick : 1);
+        double tau = 0.05 * ((double)nn / (double)(nn + SETTLE));
+        stalled = (N->settle_n >= 2) && (rel < tau) && (N->ema > EMA_FLOOR);
     } else {
         stalled = (N->ema > 0.95 * (N->ema_ref > 0.0 ? N->ema_ref : N->ema))
                   && (N->ema > EMA_FLOOR);
@@ -624,7 +776,9 @@ static void estimate_and_apply(PNet *N)
     if (k_s >= site_s && k_s > GE_FLOOR) {
         if (grow_k(N)) return;
     }
-    if (site_s > GE_FLOOR && N->depth < LK_MAX_DEPTH && !site_blocked(N, site))
+    if (site_s > GE_FLOOR && N->depth < LK_MAX_DEPTH
+        && (N->policy != POL_B || N->depth < depth_cap(N))
+        && !site_blocked(N, site))
         insert_at(N, site);
 }
 
@@ -635,6 +789,7 @@ static void net_init(void *c)
     N->tick = N->last_change = N->settle_n = 0;
     N->ema = N->ema_ref = N->ge_ref = N->ema_hist = 0.0;
     N->n_add = N->n_drop = 0;
+    N->or_add = N->or_drop = N->and_add = N->and_drop = 0;
     N->refuse_insert = N->refuse_grow = 0;
     N->i_done = N->pending_trial = N->skip_trial = 0;
     N->last_kind = 0; N->last_site = -1;
@@ -653,6 +808,7 @@ static void net_init(void *c)
                 L->W[r * L->in + j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * s;
         }
         N->layer[i].ge = N->layer[i].ae = 0.0;
+        lk_paint_dummies(&N->layer[i].L);
     }
 }
 
@@ -661,6 +817,7 @@ static void net_fwd(void *c, const double *x, double *y)
     PNet *N = c;
     const double *cur = x;
     for (size_t i = 0; i < N->depth; i++) {
+        if (N->dynamic) probe_ensure(N, &N->layer[i]);
         fit(N, i + 1, N->layer[i].L.out);
         lk_fwd(&N->layer[i].L, cur, N->act[i + 1]);
         double a = 0.0;
@@ -693,7 +850,9 @@ static void net_fwd(void *c, const double *x, double *y)
             for (size_t i = 0; i < o; i++) y[i] /= s;
         }
     } else {
-        memcpy(y, cur, o * sizeof(double));
+        /* Same tail readout as original type-nn: y = tanh(Π And). */
+        for (size_t j = 0; j < o; j++)
+            y[j] = tanh(cur[j]);
     }
 }
 
@@ -764,6 +923,13 @@ static void net_bwd(void *c, const double *x, const double *dy, double lr)
         dcur = gbuf;
     } else if (N->policy == POL_G && o <= 8 && N->act[N->depth]) {
         softmax_ce_from_mse(N->act[N->depth], dy, o, gbuf);
+        dcur = gbuf;
+    }
+    if (!uses_ce(N) && N->act[N->depth] && o <= 8) {
+        for (size_t i = 0; i < o; i++) {
+            double y = tanh(N->act[N->depth][i]);
+            gbuf[i] = dcur[i] * (1.0 - y * y);
+        }
         dcur = gbuf;
     }
     double *hold = NULL;
@@ -894,10 +1060,17 @@ static size_t net_lk(void *c, size_t idx)
 }
 static size_t net_nadd(void *c) { return ((PNet *)c)->n_add; }
 static size_t net_ndrop(void *c) { return ((PNet *)c)->n_drop; }
+static void net_corpus(void *c, size_t n) { ((PNet *)c)->n_train = n; }
+static size_t net_or_add(void *c) { return ((PNet *)c)->or_add; }
+static size_t net_or_drop(void *c) { return ((PNet *)c)->or_drop; }
+static size_t net_and_add(void *c) { return ((PNet *)c)->and_add; }
+static size_t net_and_drop(void *c) { return ((PNet *)c)->and_drop; }
 
 static AltNet open_pol(size_t in, size_t out, int policy, const char *name)
 {
     PNet *N = (PNet *)calloc(1, sizeof(PNet));
+    /* Every type-nn-* is this net: dummy Or ×1 and dummy And ×1
+       live in the product; policy only changes layer insert/grow. */
     N->dynamic = 1;
     N->policy = policy;
     N->name = name;
@@ -914,7 +1087,10 @@ static AltNet open_pol(size_t in, size_t out, int policy, const char *name)
         .depth = net_depth, .or_factors = net_kf,
         .param_count = net_params, .nbytes = net_nbytes, .free = net_free,
         .scale_layer = net_scale, .layer_in = net_lin, .layer_out = net_lout,
-        .layer_k = net_lk, .n_add = net_nadd, .n_drop = net_ndrop
+        .layer_k = net_lk, .n_add = net_nadd, .n_drop = net_ndrop,
+        .set_corpus = net_corpus,
+        .or_add = net_or_add, .or_drop = net_or_drop,
+        .and_add = net_and_add, .and_drop = net_and_drop
     };
     return h;
 }

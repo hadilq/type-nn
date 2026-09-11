@@ -90,7 +90,7 @@ static double mse(Network *net, double **X, double **Y, size_t n, size_t in, siz
         }
     }
     free(pred);
-    return acc / (double)n;
+    return acc / (double)(n * (out ? out : 1));
 }
 
 
@@ -128,7 +128,10 @@ static double net_dyn_scale(size_t db, const size_t *ab, const size_t *ob,
 static void emit(const char *task, double train_s, double infer_s,
                  size_t infer_n, long rss, long hwm,
                  size_t params, size_t nbytes, double final_mse, size_t depth,
-                 size_t n_samples, double acc, double dyn_scale, int dyn_depth, long dyn_params)
+                 size_t n_samples, double acc, double dyn_scale, int dyn_depth, long dyn_params,
+                 long layer_add, long layer_drop,
+                 long or_add, long or_drop, long and_add, long and_drop,
+                 double hold_mse, double hold_acc)
 {
     double us_per = infer_n ? (infer_s * 1e6 / (double)infer_n) : 0.0;
     printf(
@@ -136,17 +139,23 @@ static void emit(const char *task, double train_s, double infer_s,
         "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.3f,"
         "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
         "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
-        "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld}\n",
+        "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
+        "\"layer_add\":%ld,\"layer_drop\":%ld,"
+        "\"or_add\":%ld,\"or_drop\":%ld,\"and_add\":%ld,\"and_drop\":%ld,"
+        "\"hold_mse\":%.8f,\"hold_acc\":%.6f}\n",
         task, train_s, infer_s, infer_n, us_per,
         rss, hwm, params, nbytes, final_mse, depth, n_samples, acc,
-        dyn_scale, dyn_depth, dyn_params);
+        dyn_scale, dyn_depth, dyn_params,
+        layer_add, layer_drop, or_add, or_drop, and_add, and_drop,
+        hold_mse, hold_acc);
 }
 
 static void bench_xor(void)
 {
     srand(34972);
     Network *net = network_create(2, 1);
-    network_set_dynamic(net, 0);
+    network_set_dynamic(net, 1);
+    network_set_layer_probe(net, 0);
     network_set_verbose(net, 0);
     network_set_learning_rate(net, 0.08);
     network_init_weights(net);
@@ -176,7 +185,11 @@ static void bench_xor(void)
 
     emit("xor", train_s, infer_s, reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, 4, 2, 1), network_depth(net), 4, -1.0, dyn_scale, dyn_depth, dyn_params);
+         mse(net, X, Y, 4, 2, 1), network_depth(net), 4, -1.0, dyn_scale, dyn_depth, dyn_params,
+         (long)net->layer_add, (long)net->layer_drop,
+         (long)net->or_add, (long)net->or_drop,
+         (long)net->and_add, (long)net->and_drop,
+         mse(net, X, Y, 4, 2, 1), -1.0);
     network_free(net);
 }
 
@@ -216,7 +229,11 @@ static void bench_quadratic(void)
 
     emit("quadratic", train_s, infer_s, reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, N, 2, 1), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params);
+         mse(net, X, Y, N, 2, 1), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params,
+         (long)net->layer_add, (long)net->layer_drop,
+         (long)net->or_add, (long)net->or_drop,
+         (long)net->and_add, (long)net->and_drop,
+         mse(net, X, Y, N, 2, 1), -1.0);
     network_free(net);
     mat_free(X, N);
     mat_free(Y, N);
@@ -262,7 +279,11 @@ static void bench_mlp_scale(void)
 
     emit("mlp32x16x8", train_s, infer_s, reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, N, IN, OUT), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params);
+         mse(net, X, Y, N, IN, OUT), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params,
+         (long)net->layer_add, (long)net->layer_drop,
+         (long)net->or_add, (long)net->or_drop,
+         (long)net->and_add, (long)net->and_drop,
+         mse(net, X, Y, N, IN, OUT), -1.0);
     network_free(net);
     mat_free(X, N);
     mat_free(Y, N);
@@ -311,9 +332,21 @@ static int bench_real(const char *task, const char *file,
     dataset_standardize_inputs(&ds);
     if (!ds.classification) dataset_minmax_outputs(&ds);
 
+    size_t *perm = (size_t *)malloc(ds.n * sizeof(size_t));
+    dataset_perm(ds.n, DATASET_SPLIT_SEED, perm);
+    size_t ntr = dataset_ntrain(ds.n);
+    size_t nte = ds.n - ntr;
+    double **Xtr = (double **)malloc(ntr * sizeof(double *));
+    double **Ytr = (double **)malloc(ntr * sizeof(double *));
+    for (size_t i = 0; i < ntr; i++) {
+        Xtr[i] = ds.X[perm[i]];
+        Ytr[i] = ds.Y[perm[i]];
+    }
+
     srand(34972);
     Network *net = network_create(ds.in, ds.out);
-    network_set_dynamic(net, 0);
+    network_set_dynamic(net, 1);
+    network_set_layer_probe(net, 0);
     network_set_verbose(net, 0);
     network_set_learning_rate(net, lr);
     network_init_weights(net);
@@ -322,7 +355,7 @@ static int bench_real(const char *task, const char *file,
     net_snap(net, &db, ab, ob);
     size_t p0 = network_param_count(net);
     double t0 = wall_s();
-    network_train(net, ds.X, ds.Y, ds.n, epochs);
+    network_train(net, Xtr, Ytr, ntr, epochs);
     double train_s = wall_s() - t0;
     net_snap(net, &da, aa, oa);
     double dyn_scale = net_dyn_scale(db, ab, ob, da, aa, oa);
@@ -336,11 +369,36 @@ static int bench_real(const char *task, const char *file,
     double infer_s = wall_s() - t1;
     free(pred);
 
-    double acc = ds.classification ? acc_class(net, &ds) : -1.0;
+    double tr_mse = mse(net, Xtr, Ytr, ntr, ds.in, ds.out);
+    double te_mse = 0.0, te_acc = -1.0, tr_acc = -1.0;
+    if (nte) {
+        double **Xte = (double **)malloc(nte * sizeof(double *));
+        double **Yte = (double **)malloc(nte * sizeof(double *));
+        for (size_t i = 0; i < nte; i++) {
+            Xte[i] = ds.X[perm[ntr + i]];
+            Yte[i] = ds.Y[perm[ntr + i]];
+        }
+        te_mse = mse(net, Xte, Yte, nte, ds.in, ds.out);
+        if (ds.classification) {
+            Dataset tr = ds, te = ds;
+            tr.X = Xtr; tr.Y = Ytr; tr.n = ntr;
+            te.X = Xte; te.Y = Yte; te.n = nte;
+            tr_acc = acc_class(net, &tr);
+            te_acc = acc_class(net, &te);
+        }
+        free(Xte); free(Yte);
+    } else {
+        te_mse = tr_mse;
+        if (ds.classification) tr_acc = te_acc = acc_class(net, &ds);
+    }
     emit(task, train_s, infer_s, infer_reps, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
-         mse(net, ds.X, ds.Y, ds.n, ds.in, ds.out),
-         network_depth(net), ds.n, acc, dyn_scale, dyn_depth, dyn_params);
+         tr_mse, network_depth(net), ds.n, tr_acc, dyn_scale, dyn_depth, dyn_params,
+         (long)net->layer_add, (long)net->layer_drop,
+         (long)net->or_add, (long)net->or_drop,
+         (long)net->and_add, (long)net->and_drop,
+         te_mse, te_acc);
+    free(Xtr); free(Ytr); free(perm);
     network_free(net);
     dataset_free(&ds);
     free(path);
@@ -361,5 +419,7 @@ int main(int argc, char **argv)
         bench_real("wdbc", "wdbc.data", dataset_load_wdbc, 80, 0.02, 1000);
     if (!strcmp(task, "diabetes") || !strcmp(task, "all") || !strcmp(task, "real"))
         bench_real("diabetes", "diabetes.tab.txt", dataset_load_diabetes, 150, 0.02, 2000);
+    if (!strcmp(task, "ionosphere") || !strcmp(task, "all") || !strcmp(task, "real"))
+        bench_real("ionosphere", "ionosphere.data", dataset_load_ionosphere, 120, 0.02, 1000);
     return 0;
 }

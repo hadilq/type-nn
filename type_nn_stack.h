@@ -4,6 +4,7 @@
 #include "type_nn_alt.h"
 #include <stddef.h>
 #include <stdlib.h>
+#include <math.h>
 
 #define TNN_K0          2
 #define TNN_MAX_OR      8
@@ -11,6 +12,18 @@
 #define TNN_WCLIP       4.0
 #define TNN_ORCLIP      4.0
 #define TNN_ANDCLIP     32.0
+
+static inline double tnn_clip_gate(double clipped, double C)
+{
+    return (fabs(clipped) >= C - 1e-12) ? 0.05 : 1.0;
+}
+
+static inline double tnn_huber(double e)
+{
+    if (e > 1.0) return 1.0;
+    if (e < -1.0) return -1.0;
+    return e;
+}
 
 typedef struct TLayerOps {
     void  *(*new)(size_t in, size_t out, size_t k);
