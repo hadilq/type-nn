@@ -24,6 +24,10 @@ $CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c $ALTS -lm
 
 echo "== type-nn (Or/And probes, no layer probe)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 /tmp/bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
+for mode in orcool budget stuck timescale asym gres andtau degree soft combo ta tag tap tas next; do
+  echo "== type-nn-$mode =="
+  /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
+done
 
 echo "== type-nn-win + c-mlp  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 /tmp/bench_alts "$TASK" | tee /tmp/alt_bench.jsonl
@@ -50,6 +54,11 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_ben
                     rows.append(json.loads(line))
     except FileNotFoundError:
         pass
+# last row for (impl, task) wins — reruns replace earlier attempts
+uniq = {}
+for r in rows:
+    uniq[(r.get("impl"), r.get("task"))] = r
+rows = list(uniq.values())
 
 hdr = ("task         impl             hold_acc     acc  params   nbytes  us/infer   train_s"
        "  or+ or- and+ and-  L+  L-  hold_mse      mse")

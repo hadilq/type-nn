@@ -36,6 +36,8 @@ typedef struct OrNode {
     struct WeightNode *weight; /* sparse weights                  */
     struct BiasNode bias;
     size_t right_index;
+    int    cool_left;          /* samples this Or still claims as “busy” */
+    double cut;                /* tail snap after BP (annealed in orcool) */
     struct OrNode *right;
 } OrNode;
 
@@ -95,6 +97,10 @@ typedef struct {
     unsigned or_add, or_drop;
     unsigned and_add, and_drop;
     unsigned layer_add, layer_drop;
+    int      orcool;           /* prefer Or training: freeze dummy And while Ors cool */
+    unsigned orcool_step;
+    unsigned orcool_span;      /* steps over which cool/cut anneal; 0 → n*epochs */
+    unsigned andpol;           /* And-preference bits; see network_set_andpol */
 } Network;
 
 /* ── print helpers ── */
@@ -112,6 +118,9 @@ void     network_set_learning_rate(Network *net, double lr);
 void     network_set_dynamic(Network *net, int enabled);
 void     network_set_layer_probe(Network *net, int enabled);
 void     network_set_verbose(Network *net, int enabled);
+void     network_set_orcool(Network *net, int enabled);
+void     network_set_orcool_span(Network *net, unsigned span);
+void     network_set_andpol(Network *net, const char *name);
 size_t   network_depth(const Network *net);
 
 /* Insert an identity hidden layer in front of `at` (NULL = before tail). */

@@ -125,6 +125,17 @@ static double net_dyn_scale(size_t db, const size_t *ab, const size_t *ob,
     return m;
 }
 
+static const char *g_impl = "type-nn";
+static const char *g_mode = NULL;
+
+static void apply_mode(Network *net, size_t n_samples, size_t epochs)
+{
+    if (!g_mode) return;
+    network_set_andpol(net, g_mode);
+    if (n_samples && epochs)
+        network_set_orcool_span(net, (unsigned)(n_samples * epochs));
+}
+
 static void emit(const char *task, double train_s, double infer_s,
                  size_t infer_n, long rss, long hwm,
                  size_t params, size_t nbytes, double final_mse, size_t depth,
@@ -135,7 +146,7 @@ static void emit(const char *task, double train_s, double infer_s,
 {
     double us_per = infer_n ? (infer_s * 1e6 / (double)infer_n) : 0.0;
     printf(
-        "{\"impl\":\"type-nn\",\"task\":\"%s\",\"train_s\":%.6f,"
+        "{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
         "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.3f,"
         "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
         "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
@@ -143,7 +154,7 @@ static void emit(const char *task, double train_s, double infer_s,
         "\"layer_add\":%ld,\"layer_drop\":%ld,"
         "\"or_add\":%ld,\"or_drop\":%ld,\"and_add\":%ld,\"and_drop\":%ld,"
         "\"hold_mse\":%.8f,\"hold_acc\":%.6f}\n",
-        task, train_s, infer_s, infer_n, us_per,
+        g_impl, task, train_s, infer_s, infer_n, us_per,
         rss, hwm, params, nbytes, final_mse, depth, n_samples, acc,
         dyn_scale, dyn_depth, dyn_params,
         layer_add, layer_drop, or_add, or_drop, and_add, and_drop,
@@ -158,6 +169,7 @@ static void bench_xor(void)
     network_set_layer_probe(net, 0);
     network_set_verbose(net, 0);
     network_set_learning_rate(net, 0.08);
+    apply_mode(net, 4, 4000);
     network_init_weights(net);
 
     double Xd[4][2] = {{0,0},{0,1},{1,0},{1,1}};
@@ -349,6 +361,7 @@ static int bench_real(const char *task, const char *file,
     network_set_layer_probe(net, 0);
     network_set_verbose(net, 0);
     network_set_learning_rate(net, lr);
+    apply_mode(net, ntr, epochs);
     network_init_weights(net);
 
     size_t db = 0, da = 0, ab[8] = {0}, ob[8] = {0}, aa[8] = {0}, oa[8] = {0};
@@ -408,6 +421,12 @@ static int bench_real(const char *task, const char *file,
 int main(int argc, char **argv)
 {
     const char *task = (argc > 1) ? argv[1] : "all";
+    if (argc > 2 && argv[2][0]) {
+        g_mode = argv[2];
+        static char impl[64];
+        snprintf(impl, sizeof(impl), "type-nn-%s", g_mode);
+        g_impl = impl;
+    }
     if (!strcmp(task, "xor") || !strcmp(task, "all")) bench_xor();
     if (!strcmp(task, "quadratic") || !strcmp(task, "all")) bench_quadratic();
     if (!strcmp(task, "mlp32x16x8") || !strcmp(task, "all")) bench_mlp_scale();

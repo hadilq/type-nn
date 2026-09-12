@@ -16,12 +16,38 @@
 #define DBG(...) ((void)0)
 #endif
 
+static Network *g_bp_net = NULL;
+static int or_is_ones(const OrNode *node);
+static void compute_accums(AndNode *node);
+static int ap_on(unsigned bit)
+{
+    return g_bp_net && (g_bp_net->andpol & bit);
+}
+
 #define DEFAULT_OR_FACTORS  2
 #define DEFAULT_MAX_AND     4
 #define DEFAULT_LR          0.05
 #define DEFAULT_MAX_DEPTH   6
 #define DEFAULT_MAX_OR      8
 #define DEFAULT_QUANT       1e-7
+
+#define AP_ORCOOL  1u
+#define AP_BUDGET  2u
+#define AP_STUCK   4u
+#define AP_TIMES   8u
+#define AP_ASYM    16u
+#define AP_GRES    32u
+#define AP_ANDTAU  64u
+#define AP_DEGREE  128u
+#define AP_SOFT    256u
+#define AP_COMBO   (AP_ORCOOL|AP_BUDGET|AP_STUCK|AP_TIMES|AP_ASYM|AP_GRES|AP_ANDTAU)
+#define AP_TA      (AP_TIMES|AP_ANDTAU)
+#define AP_TAG     (AP_TIMES|AP_ANDTAU|AP_GRES)
+#define AP_TENS    512u              /* 32-tick only on And ensure (spawn) */
+#define AP_TSGD    1024u             /* 32-tick only on dummy And SGD */
+#define AP_TAP     (AP_TENS|AP_ANDTAU)
+#define AP_TAS     (AP_TSGD|AP_ANDTAU)
+#define AP_NEXT    (AP_TENS|AP_ANDTAU|AP_BUDGET)
 
 static double frand(void)
 {
@@ -467,20 +493,89 @@ static AndNode *and_drop_at(AndNode *head, AndNode *target)
     return head;
 }
 
+static double and_ones_band(void)
+{
+    if (ap_on(AP_ASYM)) return 0.05;
+    return 0.2;
+}
+
 static int and_is_ones(const AndNode *node)
 {
     if (!node || !node->or_row) return 0;
+    double t = and_ones_band();
     const OrNode *o = node->or_row;
     while (o) {
-        if (fabs(o->bias.value - 1.0) > 0.2) return 0;
+        if (fabs(o->bias.value - 1.0) > t) return 0;
         const WeightNode *w = o->weight;
         while (w) {
-            if (fabs(w->value) > 0.2) return 0;
+            if (fabs(w->value) > t) return 0;
             w = w->right;
         }
         o = o->right;
     }
     return 1;
+}
+
+static size_t ands_at(const Layer *l, size_t index)
+{
+    size_t n = 0;
+    const AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index) n++;
+        a = a->right;
+    }
+    return n;
+}
+
+static int dummy_ors_idle(const Layer *l, size_t index)
+{
+    const AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index) {
+            const OrNode *o = a->or_row;
+            while (o) {
+                if (or_is_ones(o) && o->cool_left > 0) return 0;
+                o = o->right;
+            }
+        }
+        a = a->right;
+    }
+    return 1;
+}
+
+static size_t max_live_or_count(const Layer *l, size_t index)
+{
+    size_t m = 0;
+    const AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index && !and_is_ones(a)) {
+            size_t k = or_count(a->or_row);
+            if (k > m) m = k;
+        }
+        a = a->right;
+    }
+    return m;
+}
+
+static double max_dummy_or_grad(Layer *l, size_t index)
+{
+    double g = 0.0;
+    AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index) {
+            compute_accums(a);
+            OrNode *o = a->or_row;
+            while (o) {
+                if (or_is_ones(o)) {
+                    double d = fabs(a->grad * o->accum);
+                    if (d > g) g = d;
+                }
+                o = o->right;
+            }
+        }
+        a = a->right;
+    }
+    return g;
 }
 
 static AndNode *and_trim(AndNode *head, size_t out_size)
@@ -748,6 +843,67 @@ void network_set_layer_probe(Network *net, int enabled)
     if (net) net->layer_probe = enabled ? 1 : 0;
 }
 
+void network_set_orcool(Network *net, int enabled)
+{
+    if (!net) return;
+    net->orcool = enabled ? 1 : 0;
+    if (enabled) net->andpol |= AP_ORCOOL;
+    else net->andpol &= ~AP_ORCOOL;
+}
+
+void network_set_orcool_span(Network *net, unsigned span)
+{
+    if (net) net->orcool_span = span;
+}
+
+void network_set_andpol(Network *net, const char *name)
+{
+    if (!net) return;
+    unsigned p = 0;
+    if (!name || !name[0] || !strcmp(name, "off") || !strcmp(name, "original"))
+        p = 0;
+    else if (!strcmp(name, "orcool")) p = AP_ORCOOL;
+    else if (!strcmp(name, "budget")) p = AP_BUDGET;
+    else if (!strcmp(name, "stuck")) p = AP_STUCK;
+    else if (!strcmp(name, "timescale")) p = AP_TIMES;
+    else if (!strcmp(name, "asym")) p = AP_ASYM;
+    else if (!strcmp(name, "gres")) p = AP_GRES;
+    else if (!strcmp(name, "andtau")) p = AP_ANDTAU;
+    else if (!strcmp(name, "degree")) p = AP_DEGREE;
+    else if (!strcmp(name, "soft")) p = AP_SOFT;
+    else if (!strcmp(name, "combo")) p = AP_COMBO;
+    else if (!strcmp(name, "ta")) p = AP_TA;
+    else if (!strcmp(name, "tag")) p = AP_TAG;
+    else if (!strcmp(name, "tap")) p = AP_TAP;
+    else if (!strcmp(name, "tas")) p = AP_TAS;
+    else if (!strcmp(name, "next")) p = AP_NEXT;
+    net->andpol = p;
+    net->orcool = (p & AP_ORCOOL) ? 1 : 0;
+}
+
+/* u: 0 at start → 1 at span. cool 48→4, cut 1e-6→0.2 so Ors train
+   first (long freeze of dummy And, loose prune) then structure tightens. */
+static double orcool_u(const Network *net)
+{
+    if (!net || !net->orcool_span) return 0.0;
+    double u = (double)net->orcool_step / (double)net->orcool_span;
+    if (u < 0.0) return 0.0;
+    if (u > 1.0) return 1.0;
+    return u;
+}
+
+static int orcool_len(const Network *net)
+{
+    double u = orcool_u(net);
+    return (int)(48.0 * (1.0 - u) + 4.0 * u + 0.5);
+}
+
+static double orcool_cut_now(const Network *net)
+{
+    double u = orcool_u(net);
+    return 1e-6 * (1.0 - u) + 0.2 * u;
+}
+
 void network_set_verbose(Network *net, int enabled)
 {
     if (net) net->verbose = enabled ? 1 : 0;
@@ -851,6 +1007,37 @@ static double stable_tanh(double z)
     return tanh(z);
 }
 
+/* Same readout on every task: u = z / √d, y = (1+tanh(u))/2 ∈ (0,1).
+   √d is the arity of the input type so a 2-D XOR and a 34-D radar
+   file are not compared on raw products of different length. */
+static size_t live_ands_at(const Layer *l, size_t index)
+{
+    size_t n = 0;
+    const AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index && !and_is_ones(a)) n++;
+        a = a->right;
+    }
+    return n;
+}
+
+static double tail_tau(const Layer *l, size_t index)
+{
+    size_t d = l->in_size ? l->in_size : 1;
+    double tau = sqrt((double)d);
+    if (ap_on(AP_ANDTAU)) {
+        size_t na = live_ands_at(l, index);
+        if (na > 1) tau *= (double)na;
+    }
+    return tau;
+}
+
+static double tail_readout(double z, double tau)
+{
+    if (tau < 1e-12) tau = 1.0;
+    return stable_tanh(z / tau);
+}
+
 static void layer_forward(Layer *l, const InOutNode *x)
 {
     in_out_free(l->in);
@@ -890,13 +1077,11 @@ static void layer_forward(Layer *l, const InOutNode *x)
         slot->value *= a->value;
         a = a->right;
     }
-    /* Tail readout only: y = tanh(Π And). Hidden layers stay the raw
-       product so an identity insert is still x ↦ x. Dummy And ≡ 1 is
-       unchanged by this map (tanh is applied after the product). */
+    /* Tail only. Hidden layers stay the raw product (identity insert). */
     if (!l->next) {
         InOutNode *slot = l->out;
         while (slot) {
-            slot->value = stable_tanh(slot->value);
+            slot->value = tail_readout(slot->value, tail_tau(l, slot->right_index));
             slot = slot->right;
         }
     }
@@ -905,6 +1090,7 @@ static void layer_forward(Layer *l, const InOutNode *x)
 
 InOutNode *network_forward(Network *net, const InOutNode *input, size_t input_size)
 {
+    g_bp_net = net;
     (void)input_size;
     const InOutNode *x = input;
     Layer *l = net->head;
@@ -1004,16 +1190,36 @@ static void weight_sgd(WeightNode *w, double grad, double lr)
     w->value = snap_quant(w->value - lr * grad, w->quantization);
 }
 
-static int or_is_ones(const OrNode *node)
+static int or_is_ones_t(const OrNode *node, double t)
 {
     /* reserved / identity-for-product: bias≈1 and all weights≈0 */
-    if (fabs(node->bias.value - 1.0) > 0.2) return 0;
+    if (t <= 0.0) t = 0.2;
+    if (fabs(node->bias.value - 1.0) > t) return 0;
     const WeightNode *w = node->weight;
     while (w) {
-        if (fabs(w->value) > 0.2) return 0;
+        if (fabs(w->value) > t) return 0;
         w = w->right;
     }
     return 1;
+}
+
+static int or_is_ones(const OrNode *node)
+{
+    double t = (node && node->cut > 0.0) ? node->cut : 0.2;
+    return or_is_ones_t(node, t);
+}
+
+static void or_cut_tail(OrNode *node, double cut)
+{
+    if (!node || cut <= 0.0) return;
+    node->cut = cut;
+    if (fabs(node->bias.value - 1.0) < cut) node->bias.value = 1.0;
+    else if (fabs(node->bias.value) < cut) node->bias.value = 0.0;
+    WeightNode *w = node->weight;
+    while (w) {
+        if (fabs(w->value) < cut) w->value = 0.0;
+        w = w->right;
+    }
 }
 
 static int or_is_dead(const OrNode *node)
@@ -1105,6 +1311,16 @@ static bool and_backward(AndNode *node, const InOutNode *x,
     while (or_row) {
         double d_or = d_and * or_row->accum;
         or_backward(or_row, x, d_or, lr);
+        if (g_bp_net && g_bp_net->orcool) {
+            double cut = orcool_cut_now(g_bp_net);
+            or_cut_tail(or_row, cut);
+            /* Busy if this Or is no longer identity, or the gradient
+               actually moved it. Otherwise tick the cooldown down. */
+            if (!or_is_ones_t(or_row, cut) || fabs(d_or) > cut)
+                or_row->cool_left = orcool_len(g_bp_net);
+            else if (or_row->cool_left > 0)
+                or_row->cool_left--;
+        }
         or_row = or_row->right;
     }
 
@@ -1124,10 +1340,18 @@ static void and_ensure_dummy(Layer *l, size_t index, unsigned *and_add)
         }
         a = a->right;
     }
-    if (n_ones == 0 && n < DEFAULT_MAX_AND) {
+    size_t cap = ap_on(AP_BUDGET) ? 2 : DEFAULT_MAX_AND;
+    if ((ap_on(AP_TIMES) || ap_on(AP_TENS)) && g_bp_net && g_bp_net->orcool_step % 32u != 0)
+        return;
+    if (ap_on(AP_STUCK)) {
+        if (!dummy_ors_idle(l, index)) return;
+        size_t max_or = g_bp_net ? g_bp_net->max_or : DEFAULT_MAX_OR;
+        if (max_live_or_count(l, index) + 1 < max_or) return;
+    }
+    size_t pol = ap_on(AP_DEGREE) ? 1 : DEFAULT_OR_FACTORS;
+    if (n_ones == 0 && n < cap) {
         double q = l->and_row ? l->and_row->quantization : DEFAULT_QUANT;
-        l->and_row = and_append_ones(l->and_row, l->in_size, index,
-                                     DEFAULT_OR_FACTORS, q);
+        l->and_row = and_append_ones(l->and_row, l->in_size, index, pol, q);
         if (and_add) (*and_add)++;
     }
 }
@@ -1187,7 +1411,7 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
         if (dynamic)
             and_ensure_dummy(l, d->right_index, and_add);
         /* Hidden: y = Π And, ∂y/∂And_r = Π_{q≠r} And_q.
-           Tail:   y = tanh(Π And), ∂y/∂And_r = (1-y²) Π_{q≠r} And_q. */
+           Tail:   y = tanh(z/√d), ∂y/∂z = (1-y²)/√d. */
         double prod = 1.0;
         AndNode *t = l->and_row;
         while (t) {
@@ -1196,8 +1420,9 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
         }
         double dprod = d->value;
         if (!l->next) {
-            double y = stable_tanh(prod);
-            dprod *= (1.0 - y * y);
+            double tau = tail_tau(l, d->right_index);
+            double y = tail_readout(prod, tau);
+            dprod *= (1.0 - y * y) / tau;
             if (!isfinite(dprod)) dprod = 0.0;
         }
         t = l->and_row;
@@ -1208,8 +1433,47 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
                     others = prod / t->value;
                 if (!isfinite(others)) others = 0.0;
                 t->grad = dprod * others;
-                fitted = and_backward(t, l->in, t->grad, lr, dynamic,
-                                      max_or, or_add, or_drop) || fitted;
+            }
+            t = t->right;
+        }
+        /* Second pass: dummy-And policies see every And grad. */
+        t = l->and_row;
+        while (t) {
+            if (t->right_index == d->right_index) {
+                int skip_dummy = 0;
+                if (and_is_ones(t)) {
+                    if (g_bp_net && g_bp_net->orcool) {
+                        AndNode *s = l->and_row;
+                        while (s) {
+                            if (s->right_index == d->right_index) {
+                                OrNode *o = s->or_row;
+                                while (o) {
+                                    if (o->cool_left > 0) { skip_dummy = 1; break; }
+                                    o = o->right;
+                                }
+                            }
+                            if (skip_dummy) break;
+                            s = s->right;
+                        }
+                    }
+                    if ((ap_on(AP_TIMES) || ap_on(AP_TSGD)) && g_bp_net
+                        && g_bp_net->orcool_step % 32u != 0)
+                        skip_dummy = 1;
+                    if (ap_on(AP_STUCK) && !dummy_ors_idle(l, d->right_index))
+                        skip_dummy = 1;
+                    if (ap_on(AP_GRES) || ap_on(AP_SOFT)) {
+                        double g_and = fabs(t->grad);
+                        double g_or = max_dummy_or_grad(l, d->right_index);
+                        if (ap_on(AP_GRES) && g_and <= 2.0 * g_or)
+                            skip_dummy = 1;
+                        if (ap_on(AP_SOFT) &&
+                            g_and <= g_or + 0.15 * (double)ands_at(l, d->right_index))
+                            skip_dummy = 1;
+                    }
+                }
+                if (!skip_dummy)
+                    fitted = and_backward(t, l->in, t->grad, lr, dynamic,
+                                          max_or, or_add, or_drop) || fitted;
             }
             t = t->right;
         }
@@ -1278,6 +1542,8 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
 
 void network_backward(Network *net, const InOutNode *dloss)
 {
+    g_bp_net = net;
+    if (net->orcool || net->andpol) net->orcool_step++;
     const InOutNode *din = dloss;
     Layer *l = net->tail;
     while (l) {
@@ -1318,6 +1584,19 @@ void network_train(Network *net,
     net->in_size = in;
     net->out_size = out;
     InOutNode *dloss = in_out_create(out);
+
+    if ((net->orcool || net->andpol) && net->orcool_span == 0 && epochs && n_samples)
+        net->orcool_span = (unsigned)(epochs * n_samples);
+
+    /* next: Or cap tracks input arity. Wide files get more linear
+       factors; iris (d=4) stays at 8. */
+    if (net->andpol & AP_NEXT) {
+        double s = 2.0 * sqrt((double)(in ? in : 1));
+        size_t k = (size_t)(s + 0.5);
+        if (k < DEFAULT_MAX_OR) k = DEFAULT_MAX_OR;
+        if (k > 16) k = 16;
+        net->max_or = k;
+    }
 
     if (net->dynamic) {
         for (Layer *l = net->head; l; l = l->next) {

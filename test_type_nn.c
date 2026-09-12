@@ -69,7 +69,7 @@ static void test_forward_known(void)
     double x[2] = {3.0, 4.0};
     double y[1] = {0};
     network_predict(net, x, 2, y, 1);
-    EXPECT_NEAR(y[0], tanh(12.0), 1e-9, "tail y = tanh(3*4)");
+    EXPECT_NEAR(y[0], tanh(12.0 / sqrt(2.0)), 1e-9, "tail y = tanh(z/√d)");
 
     x[0] = 0; x[1] = 5;
     network_predict(net, x, 2, y, 1);
@@ -406,10 +406,10 @@ static void test_single_feature_forward(void)
     double x[1] = {3.0};
     double y[1] = {0};
     network_predict(net, x, 1, y, 1);
-    EXPECT_NEAR(y[0], tanh(7.0), 1e-9, "tail y = tanh((0.5+3)*2)");
+    EXPECT_NEAR(y[0], tanh(7.0), 1e-9, "tail y = tanh(z/√1)");
     x[0] = 0;
     network_predict(net, x, 1, y, 1);
-    EXPECT_NEAR(y[0], tanh(1.0), 1e-9, "tail y = tanh((0.5+0)*2)");
+    EXPECT_NEAR(y[0], tanh(1.0), 1e-9, "tail y = tanh(1)");
     network_free(net);
 }
 
@@ -443,7 +443,8 @@ static void test_quadratic_is_rank2(void)
         double x[2] = {cases[i][0], cases[i][1]};
         double y[1];
         network_predict(net, x, 2, y, 1);
-        EXPECT_NEAR(y[0], tanh(cases[i][2]), 1e-9, "tail y = tanh(x²-y²)");
+        EXPECT_NEAR(y[0], tanh(cases[i][2] / sqrt(2.0)), 1e-9,
+                    "tail y = tanh((x²-y²)/√d)");
     }
     network_free(net);
 }
@@ -478,8 +479,8 @@ static void test_multi_output_independent(void)
     double x[2] = {2.0, 3.0};
     double y[2] = {0, 0};
     network_predict(net, x, 2, y, 2);
-    EXPECT_NEAR(y[0], tanh(6.0), 1e-9, "out0 = tanh(2*3)");
-    EXPECT_NEAR(y[1], tanh(12.0), 1e-9, "out1 = tanh(3*4)");
+    EXPECT_NEAR(y[0], tanh(6.0 / sqrt(2.0)), 1e-9, "out0 = tanh(6/√d)");
+    EXPECT_NEAR(y[1], tanh(12.0 / sqrt(2.0)), 1e-9, "out1 = tanh(12/√d)");
     network_free(net);
 }
 
@@ -654,7 +655,7 @@ static void test_negative_and_zero_inputs(void)
     double x[2] = {-2.0, 3.0};
     double y[1];
     network_predict(net, x, 2, y, 1);
-    EXPECT_NEAR(y[0], tanh(-6.0), 1e-9, "tail y = tanh((-2)*3)");
+    EXPECT_NEAR(y[0], tanh(-6.0 / sqrt(2.0)), 1e-9, "tail y = tanh(-6/√d)");
     x[0] = 0; x[1] = 0;
     network_predict(net, x, 2, y, 1);
     EXPECT_NEAR(y[0], 0.0, 1e-9, "0*0 = 0");

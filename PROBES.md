@@ -14,18 +14,22 @@ Or and And use the same dummy rule:
     Or_t = b_t + W_t · x
     And  = Π_t Or_t
     z_i  = Π_r And_{i,r}
-    y_i  = tanh(z_i)          # tail only; hidden layers stay z
+    τ    = √d                      # d = tail input arity
+    y_i  = tanh(z_i / τ)           # tail only; hidden layers stay z
 
     ∂And / ∂Or_t = Π_{u≠t} Or_u
     ∂z   / ∂And_r = Π_{q≠r} And_q
-    ∂y   / ∂z     = 1 − y²
+    ∂y   / ∂z     = (1 − y²) / τ
     ∂L   / ∂y     = y − t
 
 Dummy Or is born (b,W)=(1,0) so Or ≡ 1.
 Dummy And is a product of dummy Ors, so And ≡ 1.
 tanh is applied after the product, so a dummy ×1 does not change z.
 
-If |z| > 20, y = sign(z) and 1−y² = 0 (gradient stops at overflow).
+τ = √d puts every dataset on the same coordinate: a 2-D XOR and a
+34-D radar file are not raw products of different length.
+
+If |z/τ| > 20, y = sign(z) and 1−y² = 0.
 
 ## type-nn-* (clip + tanh)
 
@@ -40,4 +44,35 @@ If |z| > 20, y = sign(z) and 1−y² = 0 (gradient stops at overflow).
     layer_add / layer_drop  identity layer (type-nn-* only)
 
 Original type-nn sets layer_probe = 0.
+
+## type-nn-orcool
+
+Same product as original. Each Or has `cool_left` (BP cooldown) and
+`cut` (tail snap after BP). Both anneal with `u = step/span`:
+
+    cool_len = 48(1-u) + 4u
+    cut      = 1e-6(1-u) + 0.2 u
+
+A live Or resets `cool_left = cool_len`. Dummy And SGD is skipped while
+any Or on that output is cooling. Ors train first; Ands open later.
+
+## And-preference models (`./bench_type_nn TASK name`)
+
+    budget     at most one live And + one dummy And per output
+    stuck      dummy And only if dummy Ors are idle and live Ors are full
+    timescale  dummy And SGD / ensure only every 32 steps
+    asym       And identity band 0.05 (stays dummy unless a weight > 0.05)
+    gres       dummy And SGD iff |∂L/∂And_d| > 2 max|∂L/∂Or_d|
+    andtau     tail τ = √d · n_And (extra clauses do not inflate z)
+    degree     new dummy And is born with one Or (degree 0→1, then Ors grow)
+    soft       dummy And SGD iff |∂L/∂And_d| > |∂L/∂Or_d| + 0.15 n_And
+    combo      kitchen-sink (too many constraints; kept for the record)
+    ta         32-tick spawn AND dummy SGD + andtau
+    tag        ta + gres
+    tap        32-tick spawn only; dummy And trains every sample + andtau
+    tas        32-tick dummy SGD only; spawn when a dummy left 1 + andtau
+    next       tap + budget + max_or = clamp(round(2√d), 8, 16)
+
+τ = √d · max(1, n_live_And). Dummy identity Ands are not clauses.
+
 `make bench` rewrites BOARD.txt from the table it prints.
