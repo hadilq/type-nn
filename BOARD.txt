@@ -2,118 +2,156 @@ type-nn fair hold-out board
 ===========================
 
 Split: xorshift32 Fisher-Yates, seed 34972, 70/30. Same cut for every impl.
+type-nn = original linked net: Or + And probes, NO layer probe.
+type-nn-* = same And/Or algebra + layer controllers A–I / win.
+or+/or- = dummy Or (×1) promoted / collapsed.
+and+/and- = dummy And (product ≡ 1) promoted / collapsed.
+L+/L- = identity layer insert / drop (always 0 for original type-nn).
+Sorted by (hold_acc desc, acc desc, params, nbytes, us/infer, train_s).
 
-Iteration 5: no max_or, no max_and. Width and depth scale only
-from back-prop statistics. Dummy rule is the only occupancy
-constraint (one identity Or per And, one identity And per output).
+task         impl             hold_acc     acc  params   nbytes  us/infer   train_s  or+ or- and+ and-  L+  L-  hold_mse      mse
+---------------------------------------------------------------------------------------------------------------------------------
+xor          torch-poly          n/a    n/a       7      28   0.0000   0.0791    0   0    0    0   0   0  0.00000  0.00000
+xor          type-nn-ln-v2w+scale-mix+adam    n/a    n/a      12    1272   0.0000   0.0015    0   2    0    0   0   0  0.00034  0.00034
+xor          type-nn-scale-mix    n/a    n/a      12    1488   0.0000   0.0012    0   1    0    0   0   0  0.00106  0.00106
+xor          type-nn-ln-v2w+scale-energy    n/a    n/a      15    1488   0.0000   0.0015    0   1    0    0   0   0  0.00000  0.00000
+xor          type-nn-ln-v2w+scale-mix    n/a    n/a      15    1488   0.0000   0.0016    0   1    0    0   0   0  0.00000  0.00000
+xor          type-nn-ln-v2w+scale-energy+adam    n/a    n/a      16    1584   0.0000   0.0024    0   3    1    0   0   0  0.00026  0.00026
+xor          torch-mlp           n/a    n/a      33     132   0.0000   0.0978    0   0    0    0   0   0  0.00000  0.00000
+xor          c-mlp               n/a    n/a      33     264   0.0000   0.0003    0   0    0    0   0   0  0.00000  0.00000
+xor          type-nn-scale-keep    n/a    n/a      33    3192   0.0000   0.0016   28  37   13   11   0   0  0.00003  0.00003
+xor          type-nn             n/a    n/a      33    3192   0.0000   0.0018   28  37   13   11   0   0  0.00003  0.00003
+xor          type-nn-C           n/a    n/a      36     288   0.0000   0.0003   16  16    2    0   0   0  0.00008  0.00008
+xor          type-nn-F           n/a    n/a      36     288   0.0000   0.0003   17  18    2    0   0   0  0.00002  0.00002
+xor          type-nn-win         n/a    n/a      36     288   0.0000   0.0006   17  18    2    0   0   0  0.00002  0.00002
+xor          type-nn-ln-v2w      n/a    n/a      38    3192   0.0000   0.0021   12  13    5    3   0   0  0.00000  0.00000
+xor          type-nn-ln-adam     n/a    n/a      41    3408   0.0000   0.0026   11  10    4    2   0   0  0.00004  0.00004
+xor          type-nn-ln-v2w+adam    n/a    n/a      41    3408   0.0000   0.0029   11  10    4    2   0   0  0.00004  0.00004
+xor          type-nn-G           n/a    n/a      51     408   0.0000   0.0005   49  49    1    0   1   0  2.49999  2.49999
+xor          type-nn-H           n/a    n/a      60     480   0.0000   0.0005   48  48    2    0   1   0  0.31010  0.31010
+xor          type-nn-I           n/a    n/a      60     480   0.0000   0.0006   48  48    2    0   1   0  0.31010  0.31010
+xor          type-nn-D           n/a    n/a      60     480   0.0000   0.0006   48  48    2    0   1   0  0.31010  0.31010
+xor          type-nn-B           n/a    n/a      60     480   0.0000   0.0006   48  48    2    0   1   0  0.29240  0.29240
+xor          type-nn-E           n/a    n/a      60     480   0.0000   0.0007   48  48    2    0   1   0  0.31010  0.31010
+xor          type-nn-A           n/a    n/a     252    2016   0.0000   0.0018  124 121  122  118   5   0  0.50000  0.50000
 
-New gates (all sample-local, no wall-clock):
+iris         type-nn-scale-mix  0.978  0.990     115    8744   0.0000   0.0500   66  58    0    0   0   0  0.01623  0.00576
+iris         type-nn-scale-keep  0.978  0.981     200   14992   0.0000   0.0719  108 118   28   21   0   0  0.01804  0.00681
+iris         c-mlp             0.956  0.990      67     536   0.0000   0.0217    0   0    0    0   0   0  0.04324  0.01518
+iris         type-nn           0.956  0.990     185   13816   0.0000   0.0705  161 154   10    5   0   0  0.02651  0.00588
+iris         type-nn-ln-v2w+scale-mix  0.956  0.981      94    6776   0.0000   0.0530   57  55    0    0   0   0  0.02199  0.01360
+iris         type-nn-ln-v2w+scale-energy  0.956  0.981     130    9320   0.0000   0.0668   22  52   32   26   0   0  0.02183  0.01355
+iris         type-nn-ln-v2w    0.956  0.981     159   11192   0.0000   0.0729  353 489  145  140   0   0  0.02448  0.01396
+iris         torch-mlp         0.956  1.000      67     268   0.0000   0.0598    0   0    0    0   0   0  0.02693  0.01294
+iris         torch-poly        0.956  0.981      48     192   0.0000   0.0707    0   0    0    0   0   0  0.03403  0.03007
+iris         type-nn-ln-v2w+scale-mix+adam  0.911  0.924      27    2320   0.0000   0.1372  602 512    1    3   0   0  0.07039  0.07861
+iris         type-nn-ln-adam   0.844  0.990     405   27360   0.0000   0.1698  636 576   67   61   0   0  0.18509  0.01508
+iris         type-nn-ln-v2w+adam  0.844  0.990     405   27360   0.0000   0.1722  636 576   67   61   0   0  0.18509  0.01508
+iris         type-nn-win       0.489  0.533     420    3360   0.0000   0.0200  643 640   14   12   0   0  0.21739  0.22545
+iris         type-nn-F         0.489  0.495     420    3360   0.0000   0.0191  644 641   14   12   0   0  0.21482  0.22540
+iris         type-nn-I         0.356  0.324     138    1104   0.0000   0.0181  796 796    0    0   1   0  0.33333  0.33333
+iris         type-nn-G         0.356  0.324     204    1632   0.0000   0.0247  779 779   36   34   1   0  2.00000  2.00000
+iris         type-nn-A         0.356  0.324     324    2592   0.0000   0.0584  796 796    0    0   5   0  0.33333  0.33333
+iris         type-nn-B         0.244  0.371     204    1632   0.0000   0.0200  708 708  183  181   1   0  0.36026  0.30235
+iris         type-nn-H         0.244  0.371     204    1632   0.0000   0.0207  754 754   86   84   1   0  0.33673  0.28470
+iris         type-nn-E         0.244  0.371     204    1632   0.0000   0.0214  754 754   86   84   1   0  0.33673  0.28470
+iris         type-nn-D         0.244  0.371     204    1632   0.0000   0.0215  754 754   86   84   1   0  0.33673  0.28470
+iris         type-nn-C         0.244  0.371     252    2016   0.0000   0.0212 1004 1003    9    7   1   0  0.29564  0.25815
+iris         type-nn-ln-v2w+scale-energy+adam  0.089  0.057     387   27152   0.0000   0.1938  524 608  178  140   0   0  0.51850  0.56170
 
-  energy  |parent| > κ · Σ|live child grad|
-  jac     |parent| > T and Σ|∂L/∂W|_live < κ_j · |parent|
-  slack   |parent| > T and every live child is specialized
-  sign    |parent| > T and live grads fight or miss the parent sign
-  mix     energy on Or, jac on And
-  ej      energy AND jac on both axes
-  layer   ej + Ljac (refuse + stuck + residual)
+wine         c-mlp             1.000  1.000     275    2200   0.0000   0.0342    0   0    0    0   0   0  0.02512  0.00410
+wine         torch-mlp         0.981  1.000     275    1100   0.0000   0.0491    0   0    0    0   0   0  0.02339  0.00100
+wine         type-nn-scale-mix  0.981  1.000     224   14800   0.0000   0.1041   10   0    0    0   0   0  0.02082  0.00010
+wine         type-nn-scale-keep  0.981  1.000     350   22960   0.0000   0.1417   14  14    6    2   0   0  0.02041  0.00005
+wine         type-nn           0.981  1.000     350   22960   0.0000   0.1454   14  14    6    2   0   0  0.02041  0.00005
+wine         torch-poly        0.907  1.000     318    1272   0.0000   0.1667    0   0    0    0   0   0  0.12155  0.00302
+wine         type-nn-ln-v2w+scale-mix  0.907  1.000     230   14800   0.0000   0.1030  115 105    0    0   0   0  0.08337  0.00441
+wine         type-nn-ln-v2w+scale-energy  0.907  1.000     245   15728   0.0000   0.1026  115 106    1    0   0   0  0.08137  0.00440
+wine         type-nn-ln-v2w    0.907  1.000     334   21200   0.0000   0.1414  350 578  233  230   0   0  0.09490  0.00569
+wine         type-nn-F         0.852  0.782     840    6720   0.0000   0.0220  708 707    7    5   0   0  0.14316  0.17407
+wine         type-nn-win       0.759  0.887     672    5376   0.0000   0.0221  733 733    5    3   0   0  0.24755  0.12213
+wine         type-nn-ln-v2w+scale-energy+adam  0.704  0.782    1440   86928   0.0000   0.4120  443 360    7    1   0   0  0.21649  0.12762
+wine         type-nn-ln-v2w+scale-mix+adam  0.611  0.798     989   60016   0.0000   0.2355  235 183    9    6   0   0  0.23263  0.11301
+wine         type-nn-ln-adam   0.370  0.581    1303   78896   0.0000   0.5859  440 371   57   51   0   0  0.31712  0.21148
+wine         type-nn-ln-v2w+adam  0.370  0.581    1303   78896   0.0000   0.6078  440 371   57   51   0   0  0.31712  0.21148
+wine         type-nn-I         0.370  0.315     300    2400   0.0000   0.0187  752 752    0    0   1   0  0.33333  0.33333
+wine         type-nn-G         0.370  0.315     312    2496   0.0000   0.0282  737 737   31   29   1   0  2.00000  2.00000
+wine         type-nn-A         0.370  0.315     432    3456   0.0000   0.0604  752 752    0    0   5   0  0.33333  0.33333
+wine         type-nn-B         0.352  0.419     276    2208   0.0000   0.0201  677 677  155  154   1   0  0.26512  0.24727
+wine         type-nn-E         0.352  0.419     312    2496   0.0000   0.0206  678 678  154  152   1   0  0.28072  0.25847
+wine         type-nn-C         0.352  0.419     312    2496   0.0000   0.0207  842 842    6    4   1   0  0.22962  0.22068
+wine         type-nn-H         0.352  0.419     312    2496   0.0000   0.0207  678 678  154  152   1   0  0.28072  0.25847
+wine         type-nn-D         0.352  0.419     312    2496   0.0000   0.0221  678 678  154  152   1   0  0.28072  0.25847
 
-task         impl                         hold_acc     acc  params  d  L+   or+  and+  hold_mse
------------------------------------------------------------------------------------------------
-iris         scale-jac / scale-ej           0.978  0.981      60  1   0     0     0  0.01996
-iris         ln-v2w+scale-jac / +ej         0.978  0.981      66  1   0     0     0  0.02216
-iris         ln-v2w+scale-mix               0.978  0.981      96  1   0    76     0  0.02091
-iris         scale-sign                     0.978  0.990     100  1   0    38     0  0.01580
-iris         scale-mix                      0.978  0.990     115  1   0    66     0  0.01623
-iris         scale-energy                   0.978  0.990     170  1   0    25    33  0.01671
-iris         scale-keep                     0.978  0.981     200  1   0   108    28  0.01804
-iris         c-mlp                          0.956  0.990      67  2   0     0     0  0.04324
-iris         scale-slack                    0.956  0.990     130  1   0    28     2  0.01705
-iris         ln-v2w+scale-energy            0.956  0.981     145  1   0    76    56  0.02135
-iris         scale-ratio                    0.956  0.990     155  1   0    31    35  0.02439
-iris         type-nn                        0.956  0.990     185  1   0   161    10  0.02651
-iris         ln-v2w                         0.956  0.981     187  1   0   619   118  0.02342
-iris         scale-layer                    0.356  0.343     100  2   1     0     0  0.99259
-iris         ln-v2w+scale-layer             0.356  0.324     110  2   1     0     0 360.2
+wdbc         type-nn-scale-mix  0.953  0.997     186   13024   0.0000   0.2040    5   1    0    0   0   0  0.06207  0.00250
+wdbc         type-nn-scale-keep  0.953  0.997     341   22232   0.0000   0.2615   20  23    7    5   0   0  0.06435  0.00222
+wdbc         type-nn           0.953  0.997     341   22232   0.0000   0.2745   20  23    7    5   0   0  0.06435  0.00222
+wdbc         torch-mlp         0.947  0.995     513    2052   0.0000   0.0207    0   0    0    0   0   0  0.04161  0.00894
+wdbc         type-nn-ln-adam   0.942  0.977     189   13120   0.0000   0.2540   95 104   28   28   0   0  0.07091  0.05521
+wdbc         type-nn-ln-v2w+adam  0.942  0.977     189   13120   0.0000   0.2636   95 104   28   28   0   0  0.07091  0.05521
+wdbc         c-mlp             0.936  0.997     513    4104   0.0000   0.2425    0   0    0    0   0   0  0.05594  0.00760
+wdbc         type-nn-ln-v2w+scale-energy+adam  0.936  0.982     129    9744   0.0000   0.2155   41  47   18   15   0   0  0.06447  0.04279
+wdbc         torch-poly        0.930  0.987     497    1988   0.0000   0.3209    0   0    0    0   0   0  0.09021  0.03377
+wdbc         type-nn-ln-v2w+scale-mix  0.924  0.977      33    4104   0.0000   0.0928    7   2    1    1   0   0  0.06627  0.04287
+wdbc         type-nn-ln-v2w+scale-mix+adam  0.924  0.975     281   18376   0.0000   0.2255   50  43    0    0   0   0  0.09154  0.04724
+wdbc         type-nn-ln-v2w+scale-energy  0.895  0.915      97    7864   0.0000   0.1320    6  20   19   17   0   0  0.10745  0.12436
+wdbc         type-nn-ln-v2w    0.865  0.905     159   11432   0.0000   0.2286 1719 707  348  347   0   0  0.11418  0.08380
+wdbc         type-nn-I         0.649  0.618     266    2128   0.0000   0.0215  943 943   32   32   1   0  0.22881  0.23606
+wdbc         type-nn-E         0.649  0.618     266    2128   0.0000   0.0215  943 943   32   32   1   0  0.22881  0.23606
+wdbc         type-nn-H         0.649  0.618     266    2128   0.0000   0.0216  943 943   32   32   1   0  0.22881  0.23606
+wdbc         type-nn-F         0.649  0.618     266    2128   0.0000   0.0225  943 943   32   32   1   0  0.22881  0.23606
+wdbc         type-nn-D         0.649  0.618     266    2128   0.0000   0.0240  943 943   32   32   1   0  0.22881  0.23606
+wdbc         type-nn-win       0.649  0.618     266    2128   0.0000   0.0254  943 943   32   32   1   0  0.22881  0.23606
+wdbc         type-nn-G         0.649  0.618     275    2200   0.0000   0.0295  965 965    1    0   1   0  2.05263  2.14573
+wdbc         type-nn-C         0.649  0.618     308    2464   0.0000   0.0198  918 916    4    2   1   0  0.22801  0.23629
+wdbc         type-nn-B         0.649  0.618     323    2584   0.0000   0.0343  951 951   19   18   3   0  0.22792  0.23796
+wdbc         type-nn-A         0.649  0.618     476    3808   0.0000   0.0557 2578 2575 2569 2565   5   0  0.35088  0.38191
 
-wine         c-mlp                          1.000  1.000     275  2   0     0     0  0.02512
-wine         scale-energy / mix / ratio     0.981  1.000     224  1   0    10     0  0.02082
-wine         type-nn / scale-keep           0.981  1.000     350  1   0    14     6  0.02041
-wine         ln-v2w                         0.981  1.000     445  1   0   275    60  0.05478
-wine         scale-jac / slack / sign / ej  0.963  1.000      84  1   0     0     0  0.03028
-wine         ln-v2w+scale-jac / +ej         0.944  1.000      87  1   0     0     0  0.05524
-wine         ln-v2w+scale-energy / +mix     0.944  1.000     241  1   0    62     0  0.07630
+diabetes     type-nn-scale-mix    n/a    n/a      33    3032   0.0000   0.0477   12  11    0    0   0   0  0.03474  0.02521
+diabetes     type-nn-ln-v2w+scale-energy    n/a    n/a      35    3032   0.0000   0.0525    1   0    0    0   0   0  0.03472  0.02568
+diabetes     type-nn-ln-v2w+scale-mix    n/a    n/a      47    3792   0.0000   0.0624   15  15    1    0   0   0  0.03303  0.02501
+diabetes     type-nn-ln-v2w      n/a    n/a      47    3792   0.0000   0.0660  194 389  194  194   0   0  0.03288  0.02519
+diabetes     type-nn-scale-keep    n/a    n/a      66    5216   0.0000   0.0715  839 1065  226  225   0   0  0.03364  0.02542
+diabetes     type-nn             n/a    n/a      66    5216   0.0000   0.0755  839 1065  226  225   0   0  0.03364  0.02542
+diabetes     torch-poly          n/a    n/a      67     268   0.0000   0.1032    0   0    0    0   0   0  0.03812  0.02080
+diabetes     type-nn-ln-v2w+scale-mix+adam    n/a    n/a      68    5024   0.0000   0.0753   70  66    0    0   0   0  0.03611  0.02670
+diabetes     type-nn-ln-v2w+scale-energy+adam    n/a    n/a      69    5120   0.0000   0.0907   91  89    1    0   0   0  0.04054  0.02603
+diabetes     type-nn-I           n/a    n/a     100     800   0.0000   0.0195  324 325    9    9   1   0  0.05376  0.05918
+diabetes     type-nn-H           n/a    n/a     100     800   0.0000   0.0199  324 325    9    9   1   0  0.05376  0.05918
+diabetes     type-nn-B           n/a    n/a     100     800   0.0000   0.0200  226 227   12   12   1   0  0.05376  0.05918
+diabetes     type-nn-D           n/a    n/a     100     800   0.0000   0.0203  324 325    9    9   1   0  0.05376  0.05918
+diabetes     type-nn-E           n/a    n/a     100     800   0.0000   0.0208  324 325    9    9   1   0  0.05376  0.05918
+diabetes     type-nn-G           n/a    n/a     115     920   0.0000   0.0259 1400 1400    1    0   1   0  2.00779  2.00597
+diabetes     type-nn-ln-adam     n/a    n/a     169   11192   0.0000   0.1298  204 215   21   20   0   0  0.06768  0.03160
+diabetes     type-nn-ln-v2w+adam    n/a    n/a     169   11192   0.0000   0.1327  204 215   21   20   0   0  0.06768  0.03160
+diabetes     torch-mlp           n/a    n/a     193     772   0.0000   0.0414    0   0    0    0   0   0  0.03651  0.01856
+diabetes     c-mlp               n/a    n/a     193    1544   0.0000   0.0880    0   0    0    0   0   0  0.04794  0.01657
+diabetes     type-nn-C           n/a    n/a     292    2336   0.0000   0.0333  992 987   15   13   2   0  0.21206  0.21542
+diabetes     type-nn-A           n/a    n/a     316    2528   0.0000   0.0716 3777 3774 3774 3770   5   0  0.21206  0.21542
+diabetes     type-nn-win         n/a    n/a     352    2816   0.0000   0.0236  360 356    6    4   0   0  0.45161  0.36791
+diabetes     type-nn-F           n/a    n/a     352    2816   0.0000   0.0237  360 356    6    4   0   0  0.45161  0.36791
 
-wdbc         scale-ratio / energy / mix     0.953  0.997     186  1   0     5     0  0.06207
-wdbc         type-nn / scale-keep           0.953  0.997     341  1   0    20     7  0.06435
-wdbc         scale-jac / slack / sign / ej  0.947  0.992      62  1   0     0     0  0.04576
-wdbc         ln-v2w+scale-jac / +ej         0.936  0.987      63  1   0     0     0  0.05898
-wdbc         c-mlp                          0.936  0.997     513  2   0     0     0  0.05594
-wdbc         ln-v2w+scale-energy            0.936  0.985     128  1   0     5    12  0.09124
-wdbc         ln-v2w                         0.918  0.945      95  1   0  2401   461  0.08357
-wdbc         ln-v2w+scale-mix               0.649  0.618     249  1   0    16     0  0.36447
+ionosphere   c-mlp             0.943  0.992     577    4616   0.0000   0.1530    0   0    0    0   0   0  0.16790  0.01527
+ionosphere   torch-mlp         0.896  0.992     577    2308   0.0000   0.0306    0   0    0    0   0   0  0.18058  0.01028
+ionosphere   type-nn-ln-v2w    0.896  0.992     390   24952   0.0000   0.3806  353 236   88   86   0   0  0.20967  0.02087
+ionosphere   type-nn-scale-keep  0.896  0.980     560   35088   0.0000   0.5216   21  19    6    3   0   0  0.12218  0.02581
+ionosphere   type-nn-ln-v2w+scale-mix  0.887  0.910      37    4584   0.0000   0.2619   25  14    1    1   0   0  0.14686  0.07463
+ionosphere   type-nn-ln-v2w+scale-energy+adam  0.877  0.943     217   15104   0.0000   0.9244   92 128   58   53   0   0  0.11479  0.07626
+ionosphere   torch-poly        0.840  0.992     631    2524   0.0000   0.5005    0   0    0    0   0   0  0.55197  0.01238
+ionosphere   type-nn-ln-v2w+scale-energy  0.755  0.829     253   17208   0.0000   0.2047   24  37   20   14   0   0  0.27813  0.28603
+ionosphere   type-nn-ln-adam   0.670  0.800     740   45032   0.0000   1.4083  269 235   20   18   0   0  0.35757  0.32851
+ionosphere   type-nn-B         0.651  0.637     355    2840   0.0000   0.0338  875 875   18   17   3   0  0.24379  0.24442
+ionosphere   type-nn-ln-v2w+adam  0.585  0.678    1055   63104   0.0000   1.8812  332 264   17   15   0   0  0.54795  0.35110
+ionosphere   type-nn-scale-mix  0.500  0.482     420   26672   0.0000   0.3434   26  16    0    0   0   0  1.56501  1.68573
+ionosphere   type-nn           0.462  0.396    1015   61096   0.0000   0.9787   95  75    2    0   0   0  1.76321  1.91428
+ionosphere   type-nn-ln-v2w+scale-mix+adam  0.434  0.420    1262   74864   0.0000   1.0756  164 130    0    0   0   0  0.62348  0.69392
+ionosphere   type-nn-G         0.349  0.363     298    2384   0.0000   0.0217  883 883   12   12   1   0  0.25057  0.25052
+ionosphere   type-nn-I         0.349  0.363     316    2528   0.0000   0.0226  881 881   15   13   1   0  0.33270  0.32776
+ionosphere   type-nn-D         0.349  0.363     316    2528   0.0000   0.0230  881 881   15   13   1   0  0.33270  0.32776
+ionosphere   type-nn-E         0.349  0.363     316    2528   0.0000   0.0230  881 881   15   13   1   0  0.33270  0.32776
+ionosphere   type-nn-F         0.349  0.363     316    2528   0.0000   0.0233  881 881   15   13   1   0  0.33270  0.32776
+ionosphere   type-nn-H         0.349  0.363     316    2528   0.0000   0.0235  881 881   15   13   1   0  0.33270  0.32776
+ionosphere   type-nn-C         0.349  0.363     316    2528   0.0000   0.0237  471 471    3    1   1   0  0.25907  0.25829
+ionosphere   type-nn-win       0.349  0.363     316    2528   0.0000   0.0255  881 881   15   13   1   0  0.33270  0.32776
+ionosphere   type-nn-A         0.349  0.363     508    4064   0.0000   0.0585 2391 2388 2387 2383   5   0  0.65094  0.63673
 
-diabetes     scale-jac / slack / sign / ej    n/a    n/a      11  1   0     0     0  0.03111
-diabetes     ln-v2w+scale-jac / +ej           n/a    n/a      23  1   0     1     0  0.03173
-diabetes     scale-energy / mix / ratio       n/a    n/a      33  1   0    12     0  0.03474
-diabetes     type-nn / scale-keep             n/a    n/a      66  1   0   839   226  0.03364
-diabetes     ln-v2w                           n/a    n/a      69  1   0   329     1  0.03308
-diabetes     c-mlp                            n/a    n/a     193  2   0     0     0  0.04794
-
-ionosphere   c-mlp                          0.943  0.992     577  2   0     0     0  0.16790
-ionosphere   scale-keep                     0.896  0.980     560  1   0    21     6  0.12218
-ionosphere   ln-v2w+scale-mix               0.887  0.984     281  1   0    19     0  0.11522
-ionosphere   ln-v2w+scale-energy            0.877  0.992     354  1   0    16    14  0.10718
-ionosphere   scale-jac / slack / sign / ej  0.755  0.910      70  1   0     0     0  0.24062
-ionosphere   ln-v2w                         0.755  0.873     354  1   0   596   111  0.20992
-ionosphere   ln-v2w+scale-jac / +ej         0.708  0.906      71  1   0     0     0  0.26717
-ionosphere   scale-ratio                    0.509  0.588     315  1   0    21     0  1.74517
-ionosphere   scale-energy / mix             0.500  0.482     420  1   0    26     0  1.56501
-ionosphere   type-nn                        0.462  0.396    1015  1   0    95     2  1.76321
-
-
-What we learned
-===============
-
-max_or / max_and are gone on every scale-* recipe. Spawn is dummy-rule
-plus a Jacobian test. LN_WIDE still writes max_or only when growpol is
-off (legacy ln-v2w / next).
-
-  jac / ej / slack / sign   Almost never spawn on these UCI files.
-                            Tiny nets (iris 60, iono 70). Best iris
-                            hold (0.978) and best diabetes MSE, but
-                            ionosphere stays at the frozen-width
-                            floor (0.755). Conservative is not enough
-                            width for the radar file.
-
-  energy / mix              Grow Ors when the live set cannot sum to
-                            the residual. Wine / wdbc / iris stay at
-                            the type-nn hold with fewer params. Plain
-                            energy on ionosphere explodes the product
-                            (hold 0.500). Pairing with ln-v2w saves
-                            it (0.877 / 0.887).
-
-  keep                      Still the ionosphere winner among type-nn
-                            (0.896, 560 params). Dummy-always-on with
-                            prune is a scale policy, not a cap.
-
-  layer / Ljac              Inserts on iris and kills hold (0.356).
-                            Stuck+refuse is not a substitute for a
-                            count cap: one identity hidden that
-                            jitters off 1 never drops and wrecks the
-                            map. Do not ship depth yet.
-
-  ln-v2w+scale-mix          Best ln pairing: iono 0.887 at 281 params
-                            and iris 0.978. Energy-on-Or is the axis
-                            that ionosphere actually uses.
-
-c-mlp still holds ionosphere (0.943) and wine (1.000). type-nn now
-beats c-mlp on iris (0.978 vs 0.956) and wdbc (0.953 vs 0.936) with
-no numeric width cap.
-
-Next
-  1. Ship scale-keep for raw product, ln-v2w+scale-mix for the ln
-     tail. Both have no max_or / max_and.
-  2. Depth is still the open problem. Ljac is too eager on easy
-     files. Need a probe that cannot fire while a one-layer product
-     is still cutting the residual across the epoch — without a clock.
-  3. Still no clocks.

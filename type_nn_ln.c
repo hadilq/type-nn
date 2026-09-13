@@ -96,9 +96,36 @@ int tnn_ln_apply(Network *net, const char *name)
     } else if (!strcmp(name, "ln-v3b")) {
         ap |= TNN_AP_TSGD | TNN_AP_ANDTAU | TNN_AP_BUDGET;
         lp |= LN_APOS | LN_ALR | LN_AMAX | LN_ATAU | LN_WIDE;
+    } else if (!strcmp(name, "ln-taud") || !strcmp(name, "ln-sqrt")) {
+        lp |= LN_APOS | LN_TAUD;
+    } else if (!strcmp(name, "ln-v2w-taud") || !strcmp(name, "ln-v2w+taud")) {
+        lp |= LN_APOS | LN_ALR | LN_WIDE | LN_TAUD;
+    } else if (!strcmp(name, "taud")) {
+        if (net->lnpol)
+            lp = net->lnpol | LN_TAUD | LN_APOS;
+        else
+            lp |= LN_APOS | LN_TAUD;
+        if (net->andpol & TNN_AP_LOG)
+            ap = net->andpol;
+    } else if (!strcmp(name, "ln-adam")) {
+        /* log-space + assembly a>0 + Adam on W, b, a, τ */
+        lp |= LN_APOS | LN_ALR | LN_ADAM;
+    } else if (!strcmp(name, "ln-v2w-adam") || !strcmp(name, "ln-v2adam")) {
+        lp |= LN_APOS | LN_ALR | LN_WIDE | LN_ADAM;
+    } else if (!strcmp(name, "adam") || !strcmp(name, "Adam")) {
+        /* plus-form token: keep whatever ln bits are already on */
+        if (net->lnpol)
+            lp = net->lnpol | LN_ADAM | LN_APOS;
+        else
+            lp |= LN_APOS | LN_ADAM;
+        if (net->andpol & TNN_AP_LOG)
+            ap = net->andpol;
     } else
         return 0;
 
+    /* Assembly index is part of the type generating function: a_{i,r} > 0
+       on every ln recipe, including the naive product control. */
+    lp |= LN_APOS;
     net->andpol = ap;
     net->lnpol = lp;
     net->orcool = 0;
@@ -286,7 +313,7 @@ double tnn_ln_readout(double z, double tau)
 
 double tnn_ln_dydz(double z, double tau)
 {
-    if (tau < 1e-12) tau = 1.0;
+    if (tau < LN_TAU_MIN) tau = LN_TAU_MIN;
     if (!isfinite(z)) return 0.0;
     double d = 1.0 / (tau + fabs(z));
     if (tnn_ln_bit(LN_Y01))
@@ -294,10 +321,59 @@ double tnn_ln_dydz(double z, double tau)
     return d;
 }
 
+double tnn_ln_dydtau(double z, double tau)
+{
+    /* y = s ln(1+|z|/τ),  ∂y/∂τ = −s |z| / (τ (τ+|z|)) */
+    if (tau < LN_TAU_MIN) tau = LN_TAU_MIN;
+    if (!isfinite(z) || z == 0.0) return 0.0;
+    double s = (z > 0.0) ? 1.0 : -1.0;
+    double az = fabs(z);
+    double d = -s * az / (tau * (tau + az));
+    if (tnn_ln_bit(LN_Y01))
+        d /= log(2.0);
+    return d;
+}
+
+void tnn_ln_step_tau(Layer *l, size_t index, double g_tau, double lr)
+{
+    if (!l || !l->tau || index >= l->tau_n) return;
+    if (!isfinite(g_tau)) g_tau = 0.0;
+    l->tau_g[index] = g_tau;
+    double eta = lr;
+    if (tnn_ln_bit(LN_ALR)) eta *= 0.1;
+    if (tnn_ln_bit(LN_ADAM) && g_ln) {
+        eta *= 0.1;
+        unsigned long t = g_ln->adam_t ? g_ln->adam_t : 1;
+        l->tau_m[index] = LN_ADAM_B1 * l->tau_m[index] + (1.0 - LN_ADAM_B1) * g_tau;
+        l->tau_v[index] = LN_ADAM_B2 * l->tau_v[index] + (1.0 - LN_ADAM_B2) * g_tau * g_tau;
+        double b1p = g_ln->adam_b1p > 0.0 && g_ln->adam_b1p < 1.0
+            ? g_ln->adam_b1p : (1.0 - pow(LN_ADAM_B1, (double)t));
+        double b2p = g_ln->adam_b2p > 0.0 && g_ln->adam_b2p < 1.0
+            ? g_ln->adam_b2p : (1.0 - pow(LN_ADAM_B2, (double)t));
+        double mh = l->tau_m[index] / (1.0 - b1p);
+        double vh = l->tau_v[index] / (1.0 - b2p);
+        if (vh < 0.0) vh = 0.0;
+        l->tau[index] -= eta * mh / (sqrt(vh) + LN_ADAM_EPS);
+    } else {
+        l->tau[index] -= eta * g_tau;
+    }
+    if (!isfinite(l->tau[index]) || l->tau[index] < LN_TAU_MIN)
+        l->tau[index] = LN_TAU_MIN;
+}
+
 double tnn_ln_lr_a(double lr)
 {
     if (tnn_ln_bit(LN_ALR)) return lr * 0.1;
     return lr;
+}
+
+double tnn_ln_project_a(double a)
+{
+    if (!isfinite(a) || a < LN_A_MIN)
+        a = LN_A_MIN;
+    if (tnn_ln_bit(LN_AMAX) && a > LN_A_CAP)
+        a = LN_A_CAP;
+    return a;
 }
 
 void tnn_ln_init_expn(Network *net)
@@ -309,8 +385,12 @@ void tnn_ln_init_expn(Network *net)
             size_t d = l->in_size ? l->in_size : 1;
             a0 = 1.0 / sqrt((double)d);
         }
-        for (AndNode *a = l->and_row; a; a = a->right)
+        a0 = tnn_ln_project_a(a0);
+        for (AndNode *a = l->and_row; a; a = a->right) {
             a->expn = a0;
+            a->expn_m = 0.0;
+            a->expn_v = 0.0;
+        }
     }
 }
 
@@ -332,7 +412,7 @@ int tnn_ln_or_clip_gate(double or_value, int is_dummy)
 void tnn_ln_step_expn(AndNode *a, double dL_dz, double z, double gate, double lr)
 {
     if (!a || !tnn_ln_on()) return;
-    /* tas clock freezes dummy-And SGD, not live exponents. */
+    /* tas clock freezes dummy-And SGD, not live assembly indices. */
     if (g_ln && (g_ln->andpol & TNN_AP_TSGD)
         && g_ln->orcool_step % 32u != 0
         && tnn_ln_and_is_dummy(a))
@@ -343,17 +423,33 @@ void tnn_ln_step_expn(AndNode *a, double dL_dz, double z, double gate, double lr
         g_a = dL_dz * z * gate * log(fabs(A));
     if (!isfinite(g_a)) g_a = 0.0;
     a->expn_grad = g_a;
-    double na = a->expn - tnn_ln_lr_a(lr) * g_a;
-    if (tnn_ln_bit(LN_APOS) && na < 0.0) na = 0.0;
-    if (tnn_ln_bit(LN_AMAX) && na > LN_A_CAP) na = LN_A_CAP;
+    double eta = tnn_ln_lr_a(lr);
+    double na;
+    if (tnn_ln_bit(LN_ADAM) && g_ln) {
+        unsigned long t = g_ln->adam_t ? g_ln->adam_t : 1;
+        a->expn_m = LN_ADAM_B1 * a->expn_m + (1.0 - LN_ADAM_B1) * g_a;
+        a->expn_v = LN_ADAM_B2 * a->expn_v + (1.0 - LN_ADAM_B2) * g_a * g_a;
+        double b1p = g_ln->adam_b1p > 0.0 ? g_ln->adam_b1p : (1.0 - pow(LN_ADAM_B1, (double)t));
+        double b2p = g_ln->adam_b2p > 0.0 ? g_ln->adam_b2p : (1.0 - pow(LN_ADAM_B2, (double)t));
+        if (b1p >= 1.0) b1p = 1.0 - 1e-12;
+        if (b2p >= 1.0) b2p = 1.0 - 1e-12;
+        double mh = a->expn_m / (1.0 - b1p);
+        double vh = a->expn_v / (1.0 - b2p);
+        if (vh < 0.0) vh = 0.0;
+        na = a->expn - eta * mh / (sqrt(vh) + LN_ADAM_EPS);
+    } else {
+        na = a->expn - eta * g_a;
+    }
     double q = a->quantization > 0.0 ? a->quantization : 1e-7;
-    if (fabs(na) < q) na = 0.0;
     if (fabs(na - 1.0) < q) na = 1.0;
-    a->expn = na;
+    a->expn = tnn_ln_project_a(na);
 }
 
 int tnn_ln_zero_expn(const AndNode *a)
 {
-    return tnn_ln_bit(LN_APOS) && a
-        && fabs(a->expn) <= (a->quantization > 0 ? a->quantization : 1e-7);
+    /* Live clauses keep a ≥ LN_A_MIN. Hitting the floor means the
+       clause assembled to nothing and may be dropped; a new dummy
+       is born at a = 1. */
+    if (!a) return 0;
+    return a->expn <= LN_A_MIN * 1.0000001;
 }

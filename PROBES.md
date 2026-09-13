@@ -132,7 +132,7 @@ Recipes (`./bench_type_nn TASK name`), each bit isolated on top of LOGZ:
 
 Iteration 2, combinations of the bits that actually moved a hard task:
 
-    ln-v2          a≥0 + η_a=η/10
+    ln-v2          a>0 assembly + η_a=η/10
     ln-aw          a≥0 + max_or = clamp(2√d, 8, 16)
     ln-v2w         v2 + wide Or          <- best all-round
     ln-v2t         v2 + tas clock        <- best ionosphere / iris
@@ -140,6 +140,8 @@ Iteration 2, combinations of the bits that actually moved a hard task:
     ln-cap         a∈[0,3]
     ln-v2c         v2 + a∈[0,3]
     ln-v2a         v2 + τ = √d · Σ|a|
+    ln-adam        logz + assembly a>0 + Adam on W,b,a
+    ln-v2w-adam    v2w + Adam   (plus-form: ln-v2w+adam)
 
 ## Or / And spawn (type_nn_grow.c)
 

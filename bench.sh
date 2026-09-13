@@ -25,11 +25,10 @@ $CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c $ALTS -lm
 echo "== type-nn (Or/And probes, no layer probe)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 /tmp/bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
 # Iteration 5: no max_or / max_and. Width and depth from BP statistics.
-for mode in ln-v2w \
-            scale-keep scale-ratio scale-energy scale-jac scale-slack scale-sign \
-            scale-mix scale-ej scale-layer \
-            ln-v2w+scale-energy ln-v2w+scale-jac ln-v2w+scale-mix ln-v2w+scale-ej \
-            ln-v2w+scale-layer; do
+for mode in ln-v2w ln-adam ln-v2w+adam \
+            ln-v2w+scale-mix ln-v2w+scale-mix+adam \
+            ln-v2w+scale-energy ln-v2w+scale-energy+adam \
+            scale-keep scale-mix; do
   echo "== type-nn-$mode =="
   /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
 done
@@ -118,7 +117,7 @@ for task in order:
         ha_s = "   n/a" if ha is None or ha < 0 else f"{ha:6.3f}"
         lines.append(
             f"{r['task']:<12} {r['impl']:<16} {ha_s} {acc_s} {r['params']:7d} {r['nbytes']:7d} "
-            f"{r.get('us_per_infer', 0):8.3f} {r.get('train_s', 0):8.4f} "
+            f"{r.get('us_per_infer', 0):8.4f} {r.get('train_s', 0):8.4f} "
             f"{int(r.get('or_add', 0)):4d} {int(r.get('or_drop', 0)):3d} "
             f"{int(r.get('and_add', 0)):4d} {int(r.get('and_drop', 0)):4d} "
             f"{int(r.get('layer_add', 0)):3d} {int(r.get('layer_drop', 0)):3d} "

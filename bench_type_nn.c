@@ -6,6 +6,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "type_nn.h"
 #include "dataset.h"
+#include "bench_time.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,9 +17,30 @@
 
 static double wall_s(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return bench_wall_s();
+}
+
+/* Time network_predict. Sink + min wall time so us/infer cannot print 0. */
+static double time_net_infer(Network *net, double **X, size_t n, size_t in,
+                             size_t out, size_t min_reps, size_t *infer_n)
+{
+    double *pred = (double *)calloc(out ? out : 1, sizeof(double));
+    volatile double sink = 0.0;
+    size_t done = 0;
+    size_t batch = min_reps ? min_reps : 1000;
+    double t0 = wall_s();
+    do {
+        for (size_t r = 0; r < batch; r++) {
+            network_predict(net, X[r % n], in, pred, out);
+            sink += pred[0];
+        }
+        done += batch;
+    } while (wall_s() - t0 < BENCH_INFER_MIN_S);
+    double dt = wall_s() - t0;
+    if (sink < -1e300) done++;
+    free(pred);
+    if (infer_n) *infer_n = done;
+    return dt;
 }
 
 static long rss_kb(void)
@@ -147,7 +169,7 @@ static void emit(const char *task, double train_s, double infer_s,
     double us_per = infer_n ? (infer_s * 1e6 / (double)infer_n) : 0.0;
     printf(
         "{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
-        "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.3f,"
+        "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.4f,"
         "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
         "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
         "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
@@ -188,14 +210,10 @@ static void bench_xor(void)
     int dyn_depth = (int)da - (int)db;
     long dyn_params = (long)network_param_count(net) - (long)p0;
 
-    const size_t reps = 20000;
-    double pred[1];
-    double t1 = wall_s();
-    for (size_t r = 0; r < reps; r++)
-        network_predict(net, Xd[r & 3], 2, pred, 1);
-    double infer_s = wall_s() - t1;
+    size_t infer_n = 0;
+    double infer_s = time_net_infer(net, X, 4, 2, 1, 20000, &infer_n);
 
-    emit("xor", train_s, infer_s, reps, rss_kb(), hwm_kb(),
+    emit("xor", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
          mse(net, X, Y, 4, 2, 1), network_depth(net), 4, -1.0, dyn_scale, dyn_depth, dyn_params,
          (long)net->layer_add, (long)net->layer_drop,
@@ -232,14 +250,10 @@ static void bench_quadratic(void)
     int dyn_depth = (int)da - (int)db;
     long dyn_params = (long)network_param_count(net) - (long)p0;
 
-    const size_t reps = 5000;
-    double pred[1];
-    double t1 = wall_s();
-    for (size_t r = 0; r < reps; r++)
-        network_predict(net, X[r % N], 2, pred, 1);
-    double infer_s = wall_s() - t1;
+    size_t infer_n = 0;
+    double infer_s = time_net_infer(net, X, N, 2, 1, 5000, &infer_n);
 
-    emit("quadratic", train_s, infer_s, reps, rss_kb(), hwm_kb(),
+    emit("quadratic", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
          mse(net, X, Y, N, 2, 1), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params,
          (long)net->layer_add, (long)net->layer_drop,
@@ -281,15 +295,10 @@ static void bench_mlp_scale(void)
     int dyn_depth = (int)da - (int)db;
     long dyn_params = (long)network_param_count(net) - (long)p0;
 
-    const size_t reps = 1000;
-    double *pred = (double *)calloc(OUT, sizeof(double));
-    double t1 = wall_s();
-    for (size_t r = 0; r < reps; r++)
-        network_predict(net, X[r % N], IN, pred, OUT);
-    double infer_s = wall_s() - t1;
-    free(pred);
+    size_t infer_n = 0;
+    double infer_s = time_net_infer(net, X, N, IN, OUT, 1000, &infer_n);
 
-    emit("mlp32x16x8", train_s, infer_s, reps, rss_kb(), hwm_kb(),
+    emit("mlp32x16x8", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
          mse(net, X, Y, N, IN, OUT), network_depth(net), N, -1.0, dyn_scale, dyn_depth, dyn_params,
          (long)net->layer_add, (long)net->layer_drop,
@@ -375,12 +384,9 @@ static int bench_real(const char *task, const char *file,
     int dyn_depth = (int)da - (int)db;
     long dyn_params = (long)network_param_count(net) - (long)p0;
 
-    double *pred = (double *)calloc(ds.out, sizeof(double));
-    double t1 = wall_s();
-    for (size_t r = 0; r < infer_reps; r++)
-        network_predict(net, ds.X[r % ds.n], ds.in, pred, ds.out);
-    double infer_s = wall_s() - t1;
-    free(pred);
+    size_t infer_n = 0;
+    double infer_s = time_net_infer(net, ds.X, ds.n, ds.in, ds.out,
+                                   infer_reps, &infer_n);
 
     double tr_mse = mse(net, Xtr, Ytr, ntr, ds.in, ds.out);
     double te_mse = 0.0, te_acc = -1.0, tr_acc = -1.0;
@@ -404,7 +410,7 @@ static int bench_real(const char *task, const char *file,
         te_mse = tr_mse;
         if (ds.classification) tr_acc = te_acc = acc_class(net, &ds);
     }
-    emit(task, train_s, infer_s, infer_reps, rss_kb(), hwm_kb(),
+    emit(task, train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
          network_param_count(net), network_nbytes(net),
          tr_mse, network_depth(net), ds.n, tr_acc, dyn_scale, dyn_depth, dyn_params,
          (long)net->layer_add, (long)net->layer_drop,

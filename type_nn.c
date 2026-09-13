@@ -120,8 +120,10 @@ size_t network_param_count(const Network *net)
                 n += weight_count(o->weight);
             }
             if (net->andpol & AP_LOG)
-                n += 1; /* a_{i,r} */
+                n += 1; /* assembly index a_{i,r} */
         }
+        if ((net->andpol & AP_LOG) && !(net->lnpol & LN_TAUD) && !l->next)
+            n += l->out_size; /* learned tail τ_i */
     }
     return n;
 }
@@ -727,6 +729,25 @@ void in_out_print(const InOutNode *node, const char *label)
    Layer
    ════════════════════════════════════════════ */
 
+static void layer_ensure_tau(Layer *l, size_t n)
+{
+    if (!l) return;
+    if (n < 1) n = 1;
+    if (l->tau && l->tau_n >= n) return;
+    size_t old = l->tau_n;
+    l->tau   = (double *)realloc(l->tau,   n * sizeof(double));
+    l->tau_m = (double *)realloc(l->tau_m, n * sizeof(double));
+    l->tau_v = (double *)realloc(l->tau_v, n * sizeof(double));
+    l->tau_g = (double *)realloc(l->tau_g, n * sizeof(double));
+    for (size_t i = old; i < n; i++) {
+        l->tau[i] = 1.0;   /* born at 1; back-prop moves it */
+        l->tau_m[i] = 0.0;
+        l->tau_v[i] = 0.0;
+        l->tau_g[i] = 0.0;
+    }
+    l->tau_n = n;
+}
+
 static Layer *layer_create(size_t in, size_t out, double quant)
 {
     Layer *l = (Layer *)calloc(1, sizeof(Layer));
@@ -736,6 +757,7 @@ static Layer *layer_create(size_t in, size_t out, double quant)
     l->in       = in_out_create(in);
     l->out      = in_out_create(out);
     l->din      = in_out_create(in);
+    layer_ensure_tau(l, out);
     return l;
 }
 
@@ -752,6 +774,10 @@ static void layer_free(Layer *l)
     in_out_free(l->in);
     in_out_free(l->out);
     in_out_free(l->din);
+    free(l->tau);
+    free(l->tau_m);
+    free(l->tau_v);
+    free(l->tau_g);
     free(l);
 }
 
@@ -783,6 +809,7 @@ void layer_set_outputs(Layer *l, size_t out_size)
     in_out_free(l->out);
     l->out = in_out_create(out_size);
     l->out_size = out_size;
+    layer_ensure_tau(l, out_size);
 }
 
 /* ════════════════════════════════════════════
@@ -1071,9 +1098,8 @@ static double stable_tanh(double z)
     return tanh(z);
 }
 
-/* Same readout on every task: u = z / √d, y = (1+tanh(u))/2 ∈ (0,1).
-   √d is the arity of the input type so a 2-D XOR and a 34-D radar
-   file are not compared on raw products of different length. */
+/* Tail scale. ln default: learned τ_i (born 1), no √d.
+   LN_TAUD / non-ln: τ = √d, optionally × n_And or Σ|a|. */
 static size_t live_ands_at(const Layer *l, size_t index)
 {
     size_t n = 0;
@@ -1087,7 +1113,14 @@ static size_t live_ands_at(const Layer *l, size_t index)
 
 static double tail_tau(const Layer *l, size_t index)
 {
-    size_t d = l->in_size ? l->in_size : 1;
+    if (tnn_ln_on() && !tnn_ln_bit(LN_TAUD)) {
+        if (l && l->tau && index < l->tau_n) {
+            double t = l->tau[index];
+            return (t < LN_TAU_MIN) ? LN_TAU_MIN : t;
+        }
+        return 1.0;
+    }
+    size_t d = l && l->in_size ? l->in_size : 1;
     double tau = sqrt((double)d);
     if (ap_on(AP_ANDTAU) && !tnn_ln_bit(LN_ATAU)) {
         size_t na = live_ands_at(l, index);
@@ -1279,10 +1312,34 @@ static void compute_accums(AndNode *node)
     free(vals);
 }
 
+static int opt_adam(void)
+{
+    return g_bp_net && (g_bp_net->lnpol & LN_ADAM);
+}
+
+static double adam_step(double *m, double *v, double g, double lr)
+{
+    *m = LN_ADAM_B1 * *m + (1.0 - LN_ADAM_B1) * g;
+    *v = LN_ADAM_B2 * *v + (1.0 - LN_ADAM_B2) * g * g;
+    double b1p = 0.0, b2p = 0.0;
+    if (g_bp_net) {
+        b1p = g_bp_net->adam_b1p;
+        b2p = g_bp_net->adam_b2p;
+    }
+    if (b1p <= 0.0 || b1p >= 1.0) b1p = LN_ADAM_B1;
+    if (b2p <= 0.0 || b2p >= 1.0) b2p = LN_ADAM_B2;
+    double mh = *m / (1.0 - b1p);
+    double vh = *v / (1.0 - b2p);
+    if (vh < 0.0) vh = 0.0;
+    return lr * mh / (sqrt(vh) + LN_ADAM_EPS);
+}
+
 static void weight_sgd(WeightNode *w, double grad, double lr)
 {
     w->grad = grad;
-    w->value = snap_quant(w->value - lr * grad, w->quantization);
+    if (opt_adam()) lr *= 0.1;
+    double step = opt_adam() ? adam_step(&w->m, &w->v, grad, lr) : lr * grad;
+    w->value = snap_quant(w->value - step, w->quantization);
 }
 
 static int or_is_ones_t(const OrNode *node, double t)
@@ -1334,7 +1391,13 @@ static void or_backward(OrNode *node, const InOutNode *x,
 {
     node->grad = d_or;
     node->bias.grad = d_or;
-    node->bias.value = snap_quant(node->bias.value - lr * d_or, node->quantization);
+    {
+        double alr = opt_adam() ? lr * 0.1 : lr;
+        double step = opt_adam()
+            ? adam_step(&node->bias.m, &node->bias.v, d_or, alr)
+            : alr * d_or;
+        node->bias.value = snap_quant(node->bias.value - step, node->quantization);
+    }
 
     WeightNode *w = node->weight;
     const InOutNode *xi = x;
@@ -1543,6 +1606,10 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
         if (!l->next) {
             double tau = tail_tau(l, d->right_index);
             double y = tail_readout(prod, tau);
+            if (tnn_ln_on() && !tnn_ln_bit(LN_TAUD)) {
+                double g_tau = dprod * tnn_ln_dydtau(prod, tau);
+                tnn_ln_step_tau(l, d->right_index, g_tau, lr);
+            }
             dprod *= tail_dydz(prod, y, tau);
             if (!isfinite(dprod)) dprod = 0.0;
         }
@@ -1674,6 +1741,16 @@ void network_backward(Network *net, const InOutNode *dloss)
     tnn_ln_bind(net);
     tnn_grow_bind(net);
     if (net->orcool || net->andpol) net->orcool_step++;
+    if (net->lnpol & LN_ADAM) {
+        net->adam_t++;
+        if (net->adam_t == 1) {
+            net->adam_b1p = LN_ADAM_B1;
+            net->adam_b2p = LN_ADAM_B2;
+        } else {
+            net->adam_b1p *= LN_ADAM_B1;
+            net->adam_b2p *= LN_ADAM_B2;
+        }
+    }
     net->last_dloss_l1 = tnn_layer_l1(dloss);
     const InOutNode *din = dloss;
     Layer *l = net->tail;

@@ -12,6 +12,7 @@
 typedef struct BiasNode {
     double value;           /* forward-pass value    */
     double grad;            /* ∂L/∂value (backprop)  */
+    double m, v;            /* Adam first / second moment */
 } BiasNode;
 
 /* ─────────────────────────────────────────────
@@ -20,6 +21,7 @@ typedef struct BiasNode {
 typedef struct WeightNode {
     double value;             /* forward-pass value    */
     double grad;              /* ∂L/∂value (backprop)  */
+    double m, v;              /* Adam first / second moment */
     double quantization;      /* snap / prune threshold */
     size_t right_index;       /* feature index         */
     struct WeightNode *right; /* next weight           */
@@ -48,8 +50,9 @@ typedef struct AndNode {
     double value;
     double grad;
     double quantization;
-    double expn;               /* a_{i,r} in z_i = Π_r And_{i,r}^{a_{i,r}} */
+    double expn;               /* assembly index a_{i,r} > 0; z = Π A^a */
     double expn_grad;          /* ∂L/∂a_{i,r} */
+    double expn_m, expn_v;     /* Adam moments on the assembly index */
     double and_gate;           /* ∂λ̃/∂λ for log-space And product */
     struct OrNode *or_row;
     size_t right_index;
@@ -77,6 +80,13 @@ typedef struct Layer {
     InOutNode    *in;
     InOutNode    *out;
     InOutNode    *din;
+    /* Per-head tail scale τ_i. Learned from ∂L/∂τ on ln models
+       (no √d). Hidden layers leave these unused. */
+    double      *tau;
+    double      *tau_m;
+    double      *tau_v;
+    double      *tau_g;
+    size_t       tau_n;
     struct Layer *next;
     struct Layer *prev;
 } Layer;
@@ -108,6 +118,8 @@ typedef struct {
     unsigned layerpol;         /* hidden-layer insert/drop; type_nn_layer.h */
     unsigned growpol;          /* Or/And spawn gates; type_nn_grow.h */
     double   last_dloss_l1;    /* ||y-t||_1 of the sample just backwarded */
+    unsigned long adam_t;      /* Adam step index (1-based while training) */
+    double   adam_b1p, adam_b2p;
 } Network;
 
 #define TNN_AP_BUDGET 2u

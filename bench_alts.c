@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "type_nn_alt.h"
 #include "dataset.h"
+#include "bench_time.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,9 +11,29 @@
 
 static double wall_s(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return bench_wall_s();
+}
+
+static double time_alt_infer(AltNet *a, double **X, size_t n,
+                             size_t min_reps, size_t *infer_n)
+{
+    double *pred = (double *)calloc(a->out ? a->out : 1, sizeof(double));
+    volatile double sink = 0.0;
+    size_t done = 0;
+    size_t batch = min_reps ? min_reps : 1000;
+    double t0 = wall_s();
+    do {
+        for (size_t r = 0; r < batch; r++) {
+            a->forward(a->ctx, X[r % n], pred);
+            sink += pred[0];
+        }
+        done += batch;
+    } while (wall_s() - t0 < BENCH_INFER_MIN_S);
+    double dt = wall_s() - t0;
+    if (sink < -1e300) done++;
+    free(pred);
+    if (infer_n) *infer_n = done;
+    return dt;
 }
 
 static long rss_kb(void)
@@ -42,7 +63,7 @@ static void emit(const char *impl, const char *task,
 {
     double us = infer_n ? infer_s * 1e6 / (double)infer_n : 0.0;
     printf("{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
-           "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.3f,"
+           "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.4f,"
            "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
            "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
            "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
@@ -130,12 +151,8 @@ static void run_xy(const char *task, AltNet *a, double **X, double **Y,
     type_nn_alt_dyn_score(&before, &after, &dyn_scale, &dyn_depth);
     size_t p1 = a->param_count ? a->param_count(a->ctx) : p0;
     long dyn_params = (long)p1 - (long)p0;
-    double *pred = (double *)calloc(a->out, sizeof(double));
-    double t1 = wall_s();
-    for (size_t r = 0; r < reps; r++)
-        a->forward(a->ctx, X[r % n], pred);
-    double infer_s = wall_s() - t1;
-    free(pred);
+    size_t infer_n = 0;
+    double infer_s = time_alt_infer(a, X, n, reps, &infer_n);
     size_t depth = a->depth ? a->depth(a->ctx) : 1;
     long ladd = a->n_add ? (long)a->n_add(a->ctx) : 0;
     long ldrop = a->n_drop ? (long)a->n_drop(a->ctx) : 0;
@@ -144,7 +161,7 @@ static void run_xy(const char *task, AltNet *a, double **X, double **Y,
     long aa = a->and_add ? (long)a->and_add(a->ctx) : 0;
     long ad = a->and_drop ? (long)a->and_drop(a->ctx) : 0;
     double m = mse_of(a, X, Y, n);
-    emit(a->impl, task, train_s, infer_s, reps,
+    emit(a->impl, task, train_s, infer_s, infer_n,
          a->param_count(a->ctx), a->nbytes(a->ctx),
          m, n, acc, depth, dyn_scale, dyn_depth, dyn_params,
          ladd, ldrop, oa, od, aa, ad, m, acc);
@@ -254,12 +271,8 @@ static void bench_real(AltNet (*open)(size_t, size_t),
     type_nn_alt_dyn_score(&before, &after, &dyn_scale, &dyn_depth);
     size_t p1 = a.param_count ? a.param_count(a.ctx) : p0;
     long dyn_params = (long)p1 - (long)p0;
-    double *pred = (double *)calloc(a.out, sizeof(double));
-    double t1 = wall_s();
-    for (size_t r = 0; r < reps; r++)
-        a.forward(a.ctx, ds.X[r % ds.n], pred);
-    double infer_s = wall_s() - t1;
-    free(pred);
+    size_t infer_n = 0;
+    double infer_s = time_alt_infer(&a, ds.X, ds.n, reps, &infer_n);
     {
         long ladd = a.n_add ? (long)a.n_add(a.ctx) : 0;
         long ldrop = a.n_drop ? (long)a.n_drop(a.ctx) : 0;
@@ -271,7 +284,7 @@ static void bench_real(AltNet (*open)(size_t, size_t),
         double te_mse = nte ? mse_idx(&a, &ds, perm + ntr, nte) : tr_mse;
         double tr_acc = acc_idx(&a, &ds, perm, ntr);
         double te_acc = nte ? acc_idx(&a, &ds, perm + ntr, nte) : tr_acc;
-        emit(a.impl, task, train_s, infer_s, reps,
+        emit(a.impl, task, train_s, infer_s, infer_n,
              a.param_count(a.ctx), a.nbytes(a.ctx),
              tr_mse, ds.n, tr_acc,
              a.depth ? a.depth(a.ctx) : 1, dyn_scale, dyn_depth, dyn_params,

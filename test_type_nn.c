@@ -984,7 +984,7 @@ static void test_ln_readout_and_jacobian(void)
     for (WeightNode *w = o1->weight; w; w = w->right)
         w->value = (w->right_index == 1) ? 1.0 : 0.0;
 
-    const double tau = sqrt(2.0);
+    const double tau = 1.0;
     double x[2] = {3.0, 4.0};
     double y[1] = {0};
     EXPECT_NEAR(a->expn, 1.0, 1e-12, "a_{i,r} born at 1");
@@ -1010,7 +1010,7 @@ static void test_ln_readout_and_jacobian(void)
     EXPECT_NEAR(y[0], log1p(12.0 / tau), 1e-12, "alias 'log' selects the same readout");
     network_set_andpol(net, "ln");
 
-    /* L = ½(y_0−t_0)², t_0=0, a=1, z_0 = 3·4 = 12, τ=√2
+    /* L = ½(y_0−t_0)², t_0=0, a=1, z_0 = 3·4 = 12, τ=1
          ∂z_0/∂And = a z / And = 1
          ∂And/∂W_{0,0,0,0} = Or_1 x_0 = 12
          ∂L/∂W = y · 1/(τ+12) · 12 */
@@ -1049,6 +1049,38 @@ static void test_ln_readout_and_jacobian(void)
     network_train(net, Xp, Yp, 1, 1);
     EXPECT_NEAR(w00->grad, g_w, 1e-9, "stored ∂L/∂W00 matches analytic");
     EXPECT_NEAR(a->expn_grad, g_a, 1e-9, "stored ∂L/∂a matches analytic");
+    EXPECT_NEAR(net->head->tau[0], 1.0, 0.5, "τ moved from 1 but stayed O(1)");
+    EXPECT(net->head->tau[0] >= LN_TAU_MIN, "τ stays positive");
+    network_free(net);
+}
+
+static void test_ln_tau_from_backprop(void)
+{
+    section("ln tail τ is learned; ln-taud restores √d");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "ln");
+    EXPECT(!tnn_ln_bit(LN_TAUD), "default ln learns τ");
+    EXPECT_NEAR(net->head->tau[0], 1.0, 1e-12, "τ born at 1");
+    /* z=0 ⇒ ∂y/∂τ = 0, τ must not move */
+    net->head->and_row->or_row->bias.value = 0;
+    net->head->and_row->or_row->right->bias.value = 0;
+    for (WeightNode *w = net->head->and_row->or_row->weight; w; w = w->right)
+        w->value = 0.0;
+    for (WeightNode *w = net->head->and_row->or_row->right->weight; w; w = w->right)
+        w->value = 0.0;
+    double X0[1][2] = {{0.0, 0.0}};
+    double Y0[1][1] = {{0.0}};
+    double *Xp[1] = {X0[0]};
+    double *Yp[1] = {Y0[0]};
+    network_train(net, Xp, Yp, 1, 3);
+    EXPECT_NEAR(net->head->tau[0], 1.0, 1e-12, "τ frozen when z=0");
+
+    network_set_andpol(net, "ln-taud");
+    EXPECT(tnn_ln_bit(LN_TAUD), "ln-taud is the √d control");
+    /* plus-form */
+    network_set_andpol(net, "ln-v2w+taud");
+    EXPECT(tnn_ln_bit(LN_WIDE) && tnn_ln_bit(LN_TAUD), "plus-form ln-v2w+taud");
     network_free(net);
 }
 
@@ -1066,7 +1098,7 @@ static void test_ln_logspace_matches_product(void)
     for (WeightNode *w = o1->weight; w; w = w->right)
         w->value = (w->right_index == 1) ? 1.0 : 0.0;
     double x[2] = {3.0, 4.0}, y_prod[1], y_logz[1];
-    const double tau = sqrt(2.0);
+    const double tau = 1.0;
     network_predict(net, x, 2, y_prod, 1);
     network_set_andpol(net, "ln");
     network_predict(net, x, 2, y_logz, 1);
@@ -1101,7 +1133,7 @@ static void test_ln_y01_and_orclip_gate(void)
         w->value = (w->right_index == 0) ? 1.0 : 0.0;
     for (WeightNode *w = o1->weight; w; w = w->right)
         w->value = (w->right_index == 1) ? 1.0 : 0.0;
-    const double tau = sqrt(2.0);
+    const double tau = 1.0;
     double x[2] = {tau, 1.0}, y[1];
     /* z = τ·1 = τ ⇒ |y| = ln2 / ln2 = 1 */
     network_predict(net, x, 2, y, 1);
@@ -1136,7 +1168,37 @@ static void test_ln_v2_and_amax(void)
     EXPECT_NEAR(a->expn, LN_A_CAP, 1e-12, "LN_AMAX clips a down to 3");
     a->expn = -2.0;
     tnn_ln_step_expn(a, 0.0, 1.0, 1.0, 0.05);
-    EXPECT_NEAR(a->expn, 0.0, 1e-12, "LN_APOS clips a up to 0");
+    EXPECT_NEAR(a->expn, LN_A_MIN, 1e-12, "assembly index projected to LN_A_MIN");
+    network_free(net);
+}
+
+static void test_ln_adam_and_assembly(void)
+{
+    section("ln-adam / +adam; assembly index stays > 0");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "ln-adam");
+    EXPECT(tnn_ln_on(), "ln-adam is a named recipe");
+    EXPECT(tnn_ln_bit(LN_ADAM), "LN_ADAM bit");
+    EXPECT(tnn_ln_bit(LN_APOS), "assembly a>0");
+    network_set_andpol(net, "ln-v2w+adam");
+    EXPECT(tnn_ln_bit(LN_WIDE) && tnn_ln_bit(LN_ADAM) && tnn_ln_bit(LN_APOS),
+           "plus-form keeps v2w and adds Adam");
+    AndNode *a = net->head->and_row;
+    a->value = 2.0;
+    a->expn = 0.5;
+    net->adam_t = 1;
+    net->adam_b1p = LN_ADAM_B1;
+    net->adam_b2p = LN_ADAM_B2;
+    tnn_ln_bind(net);
+    tnn_ln_step_expn(a, 1.0, 2.0, 1.0, 0.05);
+    EXPECT(a->expn >= LN_A_MIN, "assembly index stays strictly positive");
+    EXPECT(isfinite(a->expn), "assembly index finite after Adam");
+    a->expn = LN_A_MIN;
+    EXPECT(tnn_ln_zero_expn(a) == 1, "floor assembly may be dropped");
+    a->expn = 1.0;
+    EXPECT(tnn_ln_zero_expn(a) == 0, "unit assembly is live");
+    EXPECT(tnn_ln_project_a(-3.0) >= LN_A_MIN, "project floor");
     network_free(net);
 }
 
@@ -1279,9 +1341,11 @@ int main(void)
     test_identity_nbytes_increase();
     test_predict_does_not_change_depth();
     test_ln_readout_and_jacobian();
+    test_ln_tau_from_backprop();
     test_ln_logspace_matches_product();
     test_ln_y01_and_orclip_gate();
     test_ln_v2_and_amax();
+    test_ln_adam_and_assembly();
     test_layer_policies();
     test_layer_cap_gate();
     test_grow_gates();
