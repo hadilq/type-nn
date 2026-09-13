@@ -48,6 +48,8 @@ typedef struct AndNode {
     double value;
     double grad;
     double quantization;
+    double expn;               /* a_{i,r} in z_i = Π_r And_{i,r}^{a_{i,r}} */
+    double expn_grad;          /* ∂L/∂a_{i,r} */
     struct OrNode *or_row;
     size_t right_index;
     int probe_cool;

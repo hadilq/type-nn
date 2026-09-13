@@ -24,7 +24,7 @@ $CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c $ALTS -lm
 
 echo "== type-nn (Or/And probes, no layer probe)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 /tmp/bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
-for mode in orcool budget stuck timescale asym gres andtau degree soft combo ta tag tap tas next; do
+for mode in orcool budget stuck timescale asym gres andtau degree soft combo ta tag tap tas next ln; do
   echo "== type-nn-$mode =="
   /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
 done

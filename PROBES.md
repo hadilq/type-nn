@@ -72,6 +72,33 @@ any Or on that output is cooling. Ors train first; Ands open later.
     tap        32-tick spawn only; dummy And trains every sample + andtau
     tas        32-tick dummy SGD only; spawn when a dummy left 1 + andtau
     next       tap + budget + max_or = clamp(round(2√d), 8, 16)
+    ln         original type-nn algebra; tail tanh → log readout below.
+
+## type-nn-ln
+
+Same And/Or product as original type-nn. Indices: output head \(i\),
+clause \(r\), linear factor \(t\), feature \(j\). Hidden layers stay \(z_i\).
+
+    Or_{i,r,t} = b_{i,r,t} + Σ_j W_{i,r,t,j} x_j
+    And_{i,r}  = Π_t Or_{i,r,t}
+    a_{i,r}    born at 1
+    z_i        = Π_r And_{i,r}^{a_{i,r}}      # sign(A)|A|^a so z_i ∈ ℝ
+    τ          = √d                           # d = tail input arity
+    y_i        = sign(z_i) ln(1 + |z_i|/τ)    # real completion of ln(1+z_i/τ)
+
+    ∂L / ∂y_i                = y_i − t_i
+    ∂y_i / ∂z_i              = 1 / (τ + |z_i|)
+    ∂z_i / ∂And_{i,r}        = z_i a_{i,r} / And_{i,r}
+    ∂z_i / ∂a_{i,r}          = z_i log |And_{i,r}|
+    ∂And_{i,r} / ∂Or_{i,r,t} = Π_{s≠t} Or_{i,r,s}
+    ∂Or_{i,r,t} / ∂W_{i,r,t,j} = x_j
+    ∂Or_{i,r,t} / ∂b_{i,r,t}   = 1
+
+And^{a} := sign(And)|And|^{a} keeps z_i real when And < 0.
+Dummy And ≡ 1 ⇒ 1^{a} ≡ 1 and ∂z/∂a = z log 1 = 0, so dummy
+exponents do not train. a_{i,r}=1 recovers the old product.
+ln(1+z_i/τ) is only real for z_i > −τ; the abs is that
+completion. For z_i ≥ 0 the two agree. y_i is C¹ at 0.
 
 τ = √d · max(1, n_live_And). Dummy identity Ands are not clauses.
 

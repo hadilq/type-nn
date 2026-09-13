@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <time.h>
+#include <float.h>
 
 #ifdef TYPE_NN_DEBUG
 #define DBG(...) printf(__VA_ARGS__)
@@ -48,6 +49,7 @@ static int ap_on(unsigned bit)
 #define AP_TAP     (AP_TENS|AP_ANDTAU)
 #define AP_TAS     (AP_TSGD|AP_ANDTAU)
 #define AP_NEXT    (AP_TENS|AP_ANDTAU|AP_BUDGET)
+#define AP_LOG     2048u             /* tail y_i = sign(z_i/τ) ln(1+|z_i/τ|) */
 
 static double frand(void)
 {
@@ -114,6 +116,8 @@ size_t network_param_count(const Network *net)
                 n += 1; /* bias */
                 n += weight_count(o->weight);
             }
+            if (net->andpol & AP_LOG)
+                n += 1; /* a_{i,r} */
         }
     }
     return n;
@@ -408,6 +412,7 @@ static AndNode *and_create(size_t in_size, size_t out_size, size_t pol_size, dou
         AndNode *n = (AndNode *)calloc(1, sizeof(AndNode));
         n->right_index = i;
         n->quantization = quant;
+        n->expn = 1.0;
         n->or_row = or_create(in_size, pol_size, quant);
         if (!head) head = n;
         if (prev) prev->right = n;
@@ -420,6 +425,7 @@ static void and_init_random(AndNode *node, double quantization)
 {
     while (node) {
         node->quantization = quantization;
+        node->expn = 1.0;
         or_init_random(node->or_row, quantization);
         node = node->right;
     }
@@ -439,6 +445,7 @@ static AndNode *and_append(AndNode *head, size_t in_size, size_t pol, double qua
 {
     AndNode *n = (AndNode *)calloc(1, sizeof(AndNode));
     n->quantization = quant;
+    n->expn = 1.0;
     n->or_row = or_create(in_size, pol, quant);
     or_init_random(n->or_row, quant);
     if (!head) {
@@ -458,6 +465,7 @@ static AndNode *and_append_ones(AndNode *head, size_t in_size, size_t index,
     /* Dummy And ≡ 1: every Or is (b=1, W=0). y ← y × 1. */
     AndNode *n = (AndNode *)calloc(1, sizeof(AndNode));
     n->quantization = quant;
+    n->expn = 1.0;
     n->right_index = index;
     n->or_row = or_create(in_size, pol, quant);
     OrNode *o = n->or_row;
@@ -877,6 +885,7 @@ void network_set_andpol(Network *net, const char *name)
     else if (!strcmp(name, "tap")) p = AP_TAP;
     else if (!strcmp(name, "tas")) p = AP_TAS;
     else if (!strcmp(name, "next")) p = AP_NEXT;
+    else if (!strcmp(name, "ln") || !strcmp(name, "log")) p = AP_LOG;
     net->andpol = p;
     net->orcool = (p & AP_ORCOOL) ? 1 : 0;
 }
@@ -1032,10 +1041,61 @@ static double tail_tau(const Layer *l, size_t index)
     return tau;
 }
 
+/* Real power used by type-nn-ln:
+     And^a := sign(And) |And|^a
+   so z_i = Π_r And_{i,r}^{a_{i,r}} stays in ℝ. */
+static double signed_pow(double base, double p)
+{
+    if (isnan(base) || isnan(p)) return 0.0;
+    if (base == 0.0) return (p > 0.0) ? 0.0 : 1.0;
+    double mag = exp(p * log(fabs(base)));
+    if (!isfinite(mag)) mag = (p > 0.0) ? DBL_MAX : 0.0;
+    return copysign(mag, base);
+}
+
+static double and_term(const AndNode *a)
+{
+    if (!a) return 1.0;
+    if (ap_on(AP_LOG))
+        return signed_pow(a->value, a->expn);
+    return a->value;
+}
+
+/* Tail ln, output i, τ = √d:
+     z_i = Π_r And_{i,r}^{a_{i,r}}
+     y_i = sign(z_i) ln(1 + |z_i|/τ)
+   The abs is the real completion of ln(1+z_i/τ) (domain z_i > -τ).
+   For z_i ≥ 0 the two coincide. C¹:
+     ∂y_i/∂z_i = 1/(τ + |z_i|) */
+static double log_readout(double z, double tau)
+{
+    if (tau < 1e-12) tau = 1.0;
+    if (isnan(z)) return 0.0;
+    if (!isfinite(z))
+        return copysign(log(DBL_MAX), z);
+    double u = z / tau;
+    if (u == 0.0) return 0.0;
+    return copysign(log1p(fabs(u)), u);
+}
+
 static double tail_readout(double z, double tau)
 {
     if (tau < 1e-12) tau = 1.0;
+    if (ap_on(AP_LOG))
+        return log_readout(z, tau);
     return stable_tanh(z / tau);
+}
+
+/* ∂y_i/∂z_i for the tail readout used in forward. */
+static double tail_dydz(double z, double y, double tau)
+{
+    if (tau < 1e-12) tau = 1.0;
+    if (ap_on(AP_LOG)) {
+        if (!isfinite(z)) return 0.0;
+        return 1.0 / (tau + fabs(z));
+    }
+    if (!isfinite(y)) return 0.0;
+    return (1.0 - y * y) / tau;
 }
 
 static void layer_forward(Layer *l, const InOutNode *x)
@@ -1074,7 +1134,7 @@ static void layer_forward(Layer *l, const InOutNode *x)
             tail = slot;
             count++;
         }
-        slot->value *= a->value;
+        slot->value *= and_term(a);
         a = a->right;
     }
     /* Tail only. Hidden layers stay the raw product (identity insert). */
@@ -1410,29 +1470,44 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
         }
         if (dynamic)
             and_ensure_dummy(l, d->right_index, and_add);
-        /* Hidden: y = Π And, ∂y/∂And_r = Π_{q≠r} And_q.
-           Tail:   y = tanh(z/√d), ∂y/∂z = (1-y²)/√d. */
+        /* Hidden: z_i = Π_r And_{i,r}^{a_{i,r}}  (a=1 if not ln).
+           Tail tanh: y_i = tanh(z_i/τ), ∂y_i/∂z_i = (1-y_i²)/τ.
+           Tail ln:   y_i = sign(z_i) ln(1+|z_i|/τ),
+                      ∂y_i/∂z_i = 1/(τ+|z_i|),
+                      ∂z_i/∂And_{i,r} = z_i a_{i,r} / And_{i,r},
+                      ∂z_i/∂a_{i,r}   = z_i log|And_{i,r}|. */
         double prod = 1.0;
         AndNode *t = l->and_row;
         while (t) {
-            if (t->right_index == d->right_index) prod *= t->value;
+            if (t->right_index == d->right_index) prod *= and_term(t);
             t = t->right;
         }
         double dprod = d->value;
         if (!l->next) {
             double tau = tail_tau(l, d->right_index);
             double y = tail_readout(prod, tau);
-            dprod *= (1.0 - y * y) / tau;
+            dprod *= tail_dydz(prod, y, tau);
             if (!isfinite(dprod)) dprod = 0.0;
         }
         t = l->and_row;
         while (t) {
             if (t->right_index == d->right_index) {
                 double others = 0.0;
-                if (isfinite(prod) && fabs(t->value) > 1e-12)
+                if (isfinite(prod) && fabs(t->value) > 1e-12) {
                     others = prod / t->value;
+                    if (ap_on(AP_LOG))
+                        others *= t->expn;
+                }
                 if (!isfinite(others)) others = 0.0;
                 t->grad = dprod * others;
+                if (ap_on(AP_LOG)) {
+                    double g_a = 0.0;
+                    if (isfinite(prod) && fabs(t->value) > 1e-12)
+                        g_a = dprod * prod * log(fabs(t->value));
+                    if (!isfinite(g_a)) g_a = 0.0;
+                    t->expn_grad = g_a;
+                    t->expn = snap_quant(t->expn - lr * g_a, t->quantization);
+                }
             }
             t = t->right;
         }

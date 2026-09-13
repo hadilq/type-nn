@@ -961,6 +961,94 @@ static void test_scale_every_layer(void)
     network_free(net);
 }
 
+/* Tail y = sign(z) ln(1+|z|), ∂y/∂z = 1/(1+|z|).
+   L = ½(y−t)² so the stored weight grad is (y−t) · ∂y/∂z · ∂z/∂w. */
+static void test_ln_readout_and_jacobian(void)
+{
+    section("type-nn-ln tail readout and analytic Jacobian");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "ln");
+
+    AndNode *a = net->head->and_row;
+    OrNode *o0 = a->or_row;
+    OrNode *o1 = o0->right;
+    EXPECT(o0 && o1, "two Or factors");
+    o0->bias.value = 0;
+    o1->bias.value = 0;
+    for (WeightNode *w = o0->weight; w; w = w->right)
+        w->value = (w->right_index == 0) ? 1.0 : 0.0;
+    for (WeightNode *w = o1->weight; w; w = w->right)
+        w->value = (w->right_index == 1) ? 1.0 : 0.0;
+
+    const double tau = sqrt(2.0);
+    double x[2] = {3.0, 4.0};
+    double y[1] = {0};
+    EXPECT_NEAR(a->expn, 1.0, 1e-12, "a_{i,r} born at 1");
+    network_predict(net, x, 2, y, 1);
+    EXPECT_NEAR(y[0], log1p(12.0 / tau), 1e-12, "a=1 ⇒ y = ln(1+|z|/τ)");
+
+    x[0] = -2.0; x[1] = 3.0;
+    network_predict(net, x, 2, y, 1);
+    EXPECT_NEAR(y[0], -log1p(6.0 / tau), 1e-12, "y = −ln(1+|z|/τ) for z<0");
+
+    x[0] = 0.0; x[1] = 5.0;
+    network_predict(net, x, 2, y, 1);
+    EXPECT_NEAR(y[0], 0.0, 1e-12, "y(0) = 0");
+
+    a->expn = 2.0;
+    x[0] = 3.0; x[1] = 4.0;
+    network_predict(net, x, 2, y, 1);
+    EXPECT_NEAR(y[0], log1p(144.0 / tau), 1e-12, "a=2 ⇒ z = And^2 = 144");
+    a->expn = 1.0;
+
+    network_set_andpol(net, "log");
+    network_predict(net, x, 2, y, 1);
+    EXPECT_NEAR(y[0], log1p(12.0 / tau), 1e-12, "alias 'log' selects the same readout");
+    network_set_andpol(net, "ln");
+
+    /* L = ½(y_0−t_0)², t_0=0, a=1, z_0 = 3·4 = 12, τ=√2
+         ∂z_0/∂And = a z / And = 1
+         ∂And/∂W_{0,0,0,0} = Or_1 x_0 = 12
+         ∂L/∂W = y · 1/(τ+12) · 12 */
+    WeightNode *w00 = o0->weight;
+    while (w00 && w00->right_index != 0) w00 = w00->right;
+    EXPECT(w00 != NULL, "W00 exists");
+    double y0 = log1p(12.0 / tau);
+    double g_w = y0 * (1.0 / (tau + 12.0)) * 4.0 * 3.0;
+    const double eps = 1e-6;
+    w00->value = 1.0 + eps;
+    network_predict(net, x, 2, y, 1);
+    double Lp = 0.5 * y[0] * y[0];
+    w00->value = 1.0 - eps;
+    network_predict(net, x, 2, y, 1);
+    double Lm = 0.5 * y[0] * y[0];
+    w00->value = 1.0;
+    EXPECT_NEAR(g_w, (Lp - Lm) / (2.0 * eps), 1e-6,
+                "∂L/∂W matches central difference");
+
+    /* ∂z/∂a = z log|And| = 12 ln 12,  ∂L/∂a = y · 1/(τ+12) · 12 ln 12 */
+    double g_a = y0 * (1.0 / (tau + 12.0)) * 12.0 * log(12.0);
+    a->expn = 1.0 + eps;
+    network_predict(net, x, 2, y, 1);
+    Lp = 0.5 * y[0] * y[0];
+    a->expn = 1.0 - eps;
+    network_predict(net, x, 2, y, 1);
+    Lm = 0.5 * y[0] * y[0];
+    a->expn = 1.0;
+    EXPECT_NEAR(g_a, (Lp - Lm) / (2.0 * eps), 1e-5,
+                "∂L/∂a matches central difference");
+
+    double Xd[1][2] = {{3.0, 4.0}};
+    double Yd[1][1] = {{0.0}};
+    double *Xp[1] = {Xd[0]};
+    double *Yp[1] = {Yd[0]};
+    network_train(net, Xp, Yp, 1, 1);
+    EXPECT_NEAR(w00->grad, g_w, 1e-9, "stored ∂L/∂W00 matches analytic");
+    EXPECT_NEAR(a->expn_grad, g_a, 1e-9, "stored ∂L/∂a matches analytic");
+    network_free(net);
+}
+
 int main(void)
 {
     printf("╔══════════════════════════════════════════════╗\n");
@@ -1006,6 +1094,7 @@ int main(void)
     test_quantization_snaps_near_zero_and_one();
     test_identity_nbytes_increase();
     test_predict_does_not_change_depth();
+    test_ln_readout_and_jacobian();
 
     printf("\n══════════════════════════════════════════════\n");
     printf("  %d passed, %d failed\n", g_pass, g_fail);
