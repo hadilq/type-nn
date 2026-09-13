@@ -4,6 +4,9 @@
  * Exit status is the number of failed assertions (0 = all passed).
  */
 #include "type_nn.h"
+#include "type_nn_ln.h"
+#include "type_nn_layer.h"
+#include "type_nn_grow.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1049,6 +1052,187 @@ static void test_ln_readout_and_jacobian(void)
     network_free(net);
 }
 
+static void test_ln_logspace_matches_product(void)
+{
+    section("ln-logz equals Π sign(A)|A|^a when |ℓ| is small");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "ln-naive");
+    AndNode *an = net->head->and_row;
+    OrNode *o0 = an->or_row, *o1 = o0->right;
+    o0->bias.value = o1->bias.value = 0;
+    for (WeightNode *w = o0->weight; w; w = w->right)
+        w->value = (w->right_index == 0) ? 1.0 : 0.0;
+    for (WeightNode *w = o1->weight; w; w = w->right)
+        w->value = (w->right_index == 1) ? 1.0 : 0.0;
+    double x[2] = {3.0, 4.0}, y_prod[1], y_logz[1];
+    const double tau = sqrt(2.0);
+    network_predict(net, x, 2, y_prod, 1);
+    network_set_andpol(net, "ln");
+    network_predict(net, x, 2, y_logz, 1);
+    EXPECT_NEAR(y_prod[0], log1p(12.0 / tau), 1e-12, "naive linear product");
+    EXPECT_NEAR(y_logz[0], y_prod[0], 1e-12, "logz matches product at |ℓ|≪L");
+    an->expn = 2.0;
+    network_predict(net, x, 2, y_logz, 1);
+    EXPECT_NEAR(y_logz[0], log1p(144.0 / tau), 1e-12, "logz a=2 ⇒ z=144");
+
+    /* And product itself: A = Or0·Or1 = 12, computed in log-space. */
+    EXPECT_NEAR(an->value, 12.0, 1e-12, "log-space And equals Π Or");
+    EXPECT_NEAR(an->and_gate, 1.0, 1e-12, "And gate is 1 when |λ|≪L");
+
+    /* Negative factor: sign travels with the product. */
+    x[0] = -2.0; x[1] = 3.0;
+    an->expn = 1.0;
+    network_predict(net, x, 2, y_logz, 1);
+    EXPECT_NEAR(y_logz[0], -log1p(6.0 / tau), 1e-12, "sign(A) in log-space z");
+    network_free(net);
+}
+
+static void test_ln_y01_and_orclip_gate(void)
+{
+    section("ln-y01 scales the tail; orclip gate is 0 on the wall");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "ln-y01");
+    AndNode *an = net->head->and_row;
+    OrNode *o0 = an->or_row, *o1 = o0->right;
+    o0->bias.value = o1->bias.value = 0;
+    for (WeightNode *w = o0->weight; w; w = w->right)
+        w->value = (w->right_index == 0) ? 1.0 : 0.0;
+    for (WeightNode *w = o1->weight; w; w = w->right)
+        w->value = (w->right_index == 1) ? 1.0 : 0.0;
+    const double tau = sqrt(2.0);
+    double x[2] = {tau, 1.0}, y[1];
+    /* z = τ·1 = τ ⇒ |y| = ln2 / ln2 = 1 */
+    network_predict(net, x, 2, y, 1);
+    EXPECT_NEAR(y[0], 1.0, 1e-12, "LN_Y01: |z|=τ ⇒ |y|=1");
+
+    network_set_andpol(net, "ln-orclip");
+    EXPECT(tnn_ln_or_clip_gate(3.9, 0) == 1, "inside clip: gate 1");
+    EXPECT(tnn_ln_or_clip_gate(4.0, 0) == 0, "on wall: gate 0");
+    EXPECT(tnn_ln_or_clip_gate(4.0, 1) == 1, "dummy Or is never clipped");
+    EXPECT_NEAR(tnn_ln_or_clip(9.0, 0), 4.0, 1e-12, "live Or clipped to +4");
+    EXPECT_NEAR(tnn_ln_or_clip(9.0, 1), 9.0, 1e-12, "dummy Or not clipped");
+    network_free(net);
+}
+
+static void test_ln_v2_and_amax(void)
+{
+    section("ln-v2 / ln-cap bind and clip a to [0, LN_A_CAP]");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "ln-v2");
+    EXPECT(tnn_ln_on(), "ln-v2 is a named recipe");
+    EXPECT(tnn_ln_bit(LN_LOGZ) && tnn_ln_bit(LN_APOS) && tnn_ln_bit(LN_ALR),
+           "v2 = logz + a≥0 + slow a");
+    network_set_andpol(net, "ln-v3");
+    EXPECT(tnn_ln_bit(LN_AMAX) && tnn_ln_bit(LN_WIDE), "v3 adds a-cap and wide Or");
+
+    network_set_andpol(net, "ln-cap");
+    AndNode *a = net->head->and_row;
+    a->value = 2.0;
+    a->expn = 9.0;
+    tnn_ln_step_expn(a, 0.0, 1.0, 1.0, 0.05);
+    EXPECT_NEAR(a->expn, LN_A_CAP, 1e-12, "LN_AMAX clips a down to 3");
+    a->expn = -2.0;
+    tnn_ln_step_expn(a, 0.0, 1.0, 1.0, 0.05);
+    EXPECT_NEAR(a->expn, 0.0, 1e-12, "LN_APOS clips a up to 0");
+    network_free(net);
+}
+
+static void test_layer_policies(void)
+{
+    section("layer insert is identity; dummy keeps one; drop removes extra");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_init_weights(net);
+    double x[2] = {0.5, -0.25}, y0[1], y1[1];
+    network_predict(net, x, 2, y0, 1);
+    Layer *hid = network_insert_identity(net, net->tail);
+    EXPECT(hid != NULL, "identity hidden inserted");
+    EXPECT(tnn_layer_is_identity(hid), "fresh insert is identity");
+    EXPECT(network_depth(net) == 2, "depth 2 after insert");
+    network_predict(net, x, 2, y1, 1);
+    EXPECT_NEAR(y0[0], y1[0], 1e-12, "identity hidden preserves y");
+
+    network_set_andpol(net, "Ldummy");
+    EXPECT(net->layerpol & TNN_LP_DUMMY, "Ldummy bit");
+    EXPECT(tnn_layer_apply(net, "Lgrad") == 1, "Lgrad named");
+    EXPECT(tnn_layer_apply(net, "nope") == 0, "unknown layer name rejected");
+
+    network_set_andpol(net, "ln-v2w+Ldummy");
+    EXPECT(tnn_ln_on(), "plus-form keeps ln recipe");
+    EXPECT(net->layerpol & TNN_LP_DUMMY, "plus-form sets Ldummy");
+
+    /* Extra identity hidden is dropped; one dummy stays. */
+    network_set_andpol(net, "Ldummy");
+    network_insert_identity(net, net->tail);
+    EXPECT(network_depth(net) == 3, "two hiddens");
+    tnn_layer_step(net);
+    EXPECT(network_depth(net) == 2, "dummy policy keeps exactly one identity hidden");
+    EXPECT(net->layer_drop >= 1, "drop counter moved");
+    network_free(net);
+}
+
+static void test_layer_cap_gate(void)
+{
+    section("Lcap binds; fresh tail is not at Or/And cap");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 0);
+    network_set_andpol(net, "Lcap");
+    EXPECT(net->layerpol & TNN_LP_CAP, "Lcap sets CAP");
+    EXPECT(net->layerpol & TNN_LP_STUCK, "Lcap sets STUCK");
+    EXPECT(net->layerpol & TNN_LP_DROP, "Lcap drops dead identities");
+    EXPECT(!tnn_layer_at_cap(net->tail, net->max_or),
+           "new net still has dummy Or/And room");
+    net->last_dloss_l1 = 10.0;
+    size_t d0 = network_depth(net);
+    tnn_layer_step(net);
+    EXPECT(network_depth(net) == d0,
+           "Lcap does not insert when the tail can still grow");
+
+    network_set_andpol(net, "ln-v2w+Lcap");
+    EXPECT(tnn_ln_on(), "ln-v2w+Lcap keeps ln");
+    EXPECT(net->layerpol & TNN_LP_CAP, "ln-v2w+Lcap sets Lcap");
+    EXPECT(tnn_layer_apply(net, "Lfull") == 1, "Lfull named");
+    EXPECT(tnn_layer_apply(net, "Lstuck") == 1, "Lstuck named");
+    network_free(net);
+}
+
+static void test_grow_gates(void)
+{
+    section("scale recipes: no cap, dummy rule, plus-form");
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 1);
+    network_set_andpol(net, "scale-ratio");
+    EXPECT(tnn_grow_on(net), "scale-ratio is a grow recipe");
+    EXPECT(net->growpol & TNN_G_OR_RATIO, "or ratio");
+    EXPECT(net->growpol & TNN_G_AND_RATIO, "and ratio");
+    EXPECT(net->max_or > 1000, "scale recipe lifts max_or");
+    network_set_andpol(net, "ln-v2w+scale-refuse");
+    EXPECT(tnn_ln_on(), "plus-form keeps ln");
+    EXPECT(net->growpol & TNN_G_REFUSE, "refuse bit");
+    EXPECT(net->layerpol & TNN_LP_REFUSE, "refuse installs Lrefuse");
+    EXPECT(tnn_grow_apply(net, "scale-keep") == 1, "keep named");
+    EXPECT(tnn_grow_apply(net, "scale-energy") == 1, "energy named");
+    EXPECT(net->growpol & TNN_G_OR_ENERGY, "or energy");
+    EXPECT(tnn_grow_apply(net, "scale-jac") == 1, "jac named");
+    EXPECT(net->growpol & TNN_G_OR_JAC, "or jac");
+    EXPECT(tnn_grow_apply(net, "scale-slack") == 1, "slack named");
+    EXPECT(tnn_grow_apply(net, "scale-sign") == 1, "sign named");
+    EXPECT(tnn_grow_apply(net, "scale-mix") == 1, "mix named");
+    EXPECT(tnn_grow_apply(net, "scale-ej") == 1, "ej named");
+    EXPECT((net->growpol & TNN_G_OR_ENERGY) && (net->growpol & TNN_G_OR_JAC),
+           "ej is energy and jac");
+    EXPECT(tnn_grow_apply(net, "scale-layer") == 1, "layer named");
+    EXPECT(net->growpol & TNN_G_REFUSE, "layer sets refuse");
+    EXPECT(tnn_layer_apply(net, "Ljac") == 1, "Ljac named");
+    EXPECT(net->layerpol & TNN_LP_REFUSE, "Ljac includes refuse");
+    EXPECT(net->layerpol & TNN_LP_STUCK, "Ljac includes stuck");
+    EXPECT(tnn_grow_apply(net, "nope") == 0, "unknown grow rejected");
+    network_free(net);
+}
+
 int main(void)
 {
     printf("╔══════════════════════════════════════════════╗\n");
@@ -1095,6 +1279,12 @@ int main(void)
     test_identity_nbytes_increase();
     test_predict_does_not_change_depth();
     test_ln_readout_and_jacobian();
+    test_ln_logspace_matches_product();
+    test_ln_y01_and_orclip_gate();
+    test_ln_v2_and_amax();
+    test_layer_policies();
+    test_layer_cap_gate();
+    test_grow_gates();
 
     printf("\n══════════════════════════════════════════════\n");
     printf("  %d passed, %d failed\n", g_pass, g_fail);

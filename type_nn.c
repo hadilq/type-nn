@@ -1,5 +1,8 @@
 #define _GNU_SOURCE
 #include "type_nn.h"
+#include "type_nn_ln.h"
+#include "type_nn_layer.h"
+#include "type_nn_grow.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +52,7 @@ static int ap_on(unsigned bit)
 #define AP_TAP     (AP_TENS|AP_ANDTAU)
 #define AP_TAS     (AP_TSGD|AP_ANDTAU)
 #define AP_NEXT    (AP_TENS|AP_ANDTAU|AP_BUDGET)
-#define AP_LOG     2048u             /* tail y_i = sign(z_i/τ) ln(1+|z_i/τ|) */
+#define AP_LOG     TNN_AP_LOG        /* type-nn-ln; details in type_nn_ln.c */
 
 static double frand(void)
 {
@@ -466,6 +469,8 @@ static AndNode *and_append_ones(AndNode *head, size_t in_size, size_t index,
     AndNode *n = (AndNode *)calloc(1, sizeof(AndNode));
     n->quantization = quant;
     n->expn = 1.0;
+    if (tnn_ln_bit(LN_ASMALL) && in_size)
+        n->expn = 1.0 / sqrt((double)in_size);
     n->right_index = index;
     n->or_row = or_create(in_size, pol, quant);
     OrNode *o = n->or_row;
@@ -864,30 +869,73 @@ void network_set_orcool_span(Network *net, unsigned span)
     if (net) net->orcool_span = span;
 }
 
+void network_set_layerpol(Network *net, const char *name)
+{
+    if (!net) return;
+    net->layerpol = 0;
+    if (!name || !name[0]) return;
+    tnn_layer_apply(net, name);
+}
+
+static int apply_one_recipe(Network *net, const char *n)
+{
+    if (!n || !n[0] || !strcmp(n, "off") || !strcmp(n, "original")) {
+        net->andpol = 0;
+        net->orcool = 0;
+        return 1;
+    }
+    if (tnn_ln_apply(net, n)) return 1;
+    if (tnn_grow_apply(net, n)) {
+        if (net->growpol & TNN_G_REFUSE)
+            tnn_layer_apply(net, "Ljac");
+        return 1;
+    }
+    if (tnn_layer_apply(net, n)) return 1;
+    unsigned p = 0;
+    if (!strcmp(n, "orcool")) p = AP_ORCOOL;
+    else if (!strcmp(n, "budget")) p = AP_BUDGET;
+    else if (!strcmp(n, "stuck")) p = AP_STUCK;
+    else if (!strcmp(n, "timescale")) p = AP_TIMES;
+    else if (!strcmp(n, "asym")) p = AP_ASYM;
+    else if (!strcmp(n, "gres")) p = AP_GRES;
+    else if (!strcmp(n, "andtau")) p = AP_ANDTAU;
+    else if (!strcmp(n, "degree")) p = AP_DEGREE;
+    else if (!strcmp(n, "soft")) p = AP_SOFT;
+    else if (!strcmp(n, "combo")) p = AP_COMBO;
+    else if (!strcmp(n, "ta")) p = AP_TA;
+    else if (!strcmp(n, "tag")) p = AP_TAG;
+    else if (!strcmp(n, "tap")) p = AP_TAP;
+    else if (!strcmp(n, "tas")) p = AP_TAS;
+    else if (!strcmp(n, "next")) p = AP_NEXT;
+    else return 0;
+    net->andpol = p;
+    net->orcool = (p & AP_ORCOOL) ? 1 : 0;
+    return 1;
+}
+
 void network_set_andpol(Network *net, const char *name)
 {
     if (!net) return;
-    unsigned p = 0;
-    if (!name || !name[0] || !strcmp(name, "off") || !strcmp(name, "original"))
-        p = 0;
-    else if (!strcmp(name, "orcool")) p = AP_ORCOOL;
-    else if (!strcmp(name, "budget")) p = AP_BUDGET;
-    else if (!strcmp(name, "stuck")) p = AP_STUCK;
-    else if (!strcmp(name, "timescale")) p = AP_TIMES;
-    else if (!strcmp(name, "asym")) p = AP_ASYM;
-    else if (!strcmp(name, "gres")) p = AP_GRES;
-    else if (!strcmp(name, "andtau")) p = AP_ANDTAU;
-    else if (!strcmp(name, "degree")) p = AP_DEGREE;
-    else if (!strcmp(name, "soft")) p = AP_SOFT;
-    else if (!strcmp(name, "combo")) p = AP_COMBO;
-    else if (!strcmp(name, "ta")) p = AP_TA;
-    else if (!strcmp(name, "tag")) p = AP_TAG;
-    else if (!strcmp(name, "tap")) p = AP_TAP;
-    else if (!strcmp(name, "tas")) p = AP_TAS;
-    else if (!strcmp(name, "next")) p = AP_NEXT;
-    else if (!strcmp(name, "ln") || !strcmp(name, "log")) p = AP_LOG;
-    net->andpol = p;
-    net->orcool = (p & AP_ORCOOL) ? 1 : 0;
+    tnn_ln_bind(net);
+    tnn_grow_bind(net);
+    net->lnpol = 0;
+    net->layerpol = 0;
+    net->growpol = 0;
+    net->andpol = 0;
+    net->orcool = 0;
+    if (!name) return;
+
+    /* "ln-v2w+scale-ratio" or "ln-v2w+Lcap" */
+    char buf[160];
+    strncpy(buf, name, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    char *tok = buf;
+    while (tok && tok[0]) {
+        char *plus = strchr(tok, '+');
+        if (plus) *plus = 0;
+        apply_one_recipe(net, tok);
+        tok = plus ? plus + 1 : NULL;
+    }
 }
 
 /* u: 0 at start → 1 at span. cool 48→4, cut 1e-6→0.2 so Ors train
@@ -990,6 +1038,10 @@ static double or_forward(OrNode *node, const InOutNode *x)
             xi = xi->right;
         }
     }
+    if (tnn_ln_on()) {
+        int dummy = or_is_ones(node);
+        sum = tnn_ln_or_clip(sum, dummy);
+    }
     node->value = sum;
     return sum;
 }
@@ -1003,7 +1055,10 @@ static double and_forward(AndNode *node, const InOutNode *x)
         or_row = or_row->right;
     }
     node->value = prod;
-    return prod;
+    node->and_gate = 1.0;
+    if (tnn_ln_bit(LN_LOGZ))
+        tnn_ln_and_eval(node);
+    return node->value;
 }
 
 /* y = tanh(z). For |z|>20, |tanh|=1 to machine precision and 1-y²=0. */
@@ -1034,66 +1089,36 @@ static double tail_tau(const Layer *l, size_t index)
 {
     size_t d = l->in_size ? l->in_size : 1;
     double tau = sqrt((double)d);
-    if (ap_on(AP_ANDTAU)) {
+    if (ap_on(AP_ANDTAU) && !tnn_ln_bit(LN_ATAU)) {
         size_t na = live_ands_at(l, index);
         if (na > 1) tau *= (double)na;
     }
+    if (tnn_ln_on())
+        tau = tnn_ln_tau(l, index, tau);
     return tau;
-}
-
-/* Real power used by type-nn-ln:
-     And^a := sign(And) |And|^a
-   so z_i = Π_r And_{i,r}^{a_{i,r}} stays in ℝ. */
-static double signed_pow(double base, double p)
-{
-    if (isnan(base) || isnan(p)) return 0.0;
-    if (base == 0.0) return (p > 0.0) ? 0.0 : 1.0;
-    double mag = exp(p * log(fabs(base)));
-    if (!isfinite(mag)) mag = (p > 0.0) ? DBL_MAX : 0.0;
-    return copysign(mag, base);
 }
 
 static double and_term(const AndNode *a)
 {
     if (!a) return 1.0;
     if (ap_on(AP_LOG))
-        return signed_pow(a->value, a->expn);
+        return tnn_ln_and_term(a);
     return a->value;
-}
-
-/* Tail ln, output i, τ = √d:
-     z_i = Π_r And_{i,r}^{a_{i,r}}
-     y_i = sign(z_i) ln(1 + |z_i|/τ)
-   The abs is the real completion of ln(1+z_i/τ) (domain z_i > -τ).
-   For z_i ≥ 0 the two coincide. C¹:
-     ∂y_i/∂z_i = 1/(τ + |z_i|) */
-static double log_readout(double z, double tau)
-{
-    if (tau < 1e-12) tau = 1.0;
-    if (isnan(z)) return 0.0;
-    if (!isfinite(z))
-        return copysign(log(DBL_MAX), z);
-    double u = z / tau;
-    if (u == 0.0) return 0.0;
-    return copysign(log1p(fabs(u)), u);
 }
 
 static double tail_readout(double z, double tau)
 {
     if (tau < 1e-12) tau = 1.0;
     if (ap_on(AP_LOG))
-        return log_readout(z, tau);
+        return tnn_ln_readout(z, tau);
     return stable_tanh(z / tau);
 }
 
-/* ∂y_i/∂z_i for the tail readout used in forward. */
 static double tail_dydz(double z, double y, double tau)
 {
     if (tau < 1e-12) tau = 1.0;
-    if (ap_on(AP_LOG)) {
-        if (!isfinite(z)) return 0.0;
-        return 1.0 / (tau + fabs(z));
-    }
+    if (ap_on(AP_LOG))
+        return tnn_ln_dydz(z, tau);
     if (!isfinite(y)) return 0.0;
     return (1.0 - y * y) / tau;
 }
@@ -1137,6 +1162,14 @@ static void layer_forward(Layer *l, const InOutNode *x)
         slot->value *= and_term(a);
         a = a->right;
     }
+    if (tnn_ln_on()) {
+        InOutNode *slot = l->out;
+        while (slot) {
+            TnnLnZ ev = tnn_ln_eval(l->and_row, slot->right_index);
+            slot->value = ev.z;
+            slot = slot->right;
+        }
+    }
     /* Tail only. Hidden layers stay the raw product (identity insert). */
     if (!l->next) {
         InOutNode *slot = l->out;
@@ -1151,6 +1184,8 @@ static void layer_forward(Layer *l, const InOutNode *x)
 InOutNode *network_forward(Network *net, const InOutNode *input, size_t input_size)
 {
     g_bp_net = net;
+    tnn_ln_bind(net);
+    tnn_grow_bind(net);
     (void)input_size;
     const InOutNode *x = input;
     Layer *l = net->head;
@@ -1322,9 +1357,10 @@ static void or_backward(OrNode *node, const InOutNode *x,
     }
 }
 
-/* Keep exactly one identity Or (b=1, W=0) in the product. */
+/* Keep at most one identity Or. No max_or when growpol is on:
+   the spawn gate decides whether a missing dummy is replaced. */
 static void or_ensure_dummy(AndNode *node, size_t in,
-                            size_t max_or, unsigned *or_add)
+                            size_t max_or, unsigned *or_add, double d_and)
 {
     size_t n = 0, n_ones = 0;
     OrNode *o = node->or_row;
@@ -1333,10 +1369,14 @@ static void or_ensure_dummy(AndNode *node, size_t in,
         if (or_is_ones(o)) n_ones++;
         o = o->right;
     }
-    if (n_ones == 0 && n < max_or) {
-        node->or_row = or_append_unit(node->or_row, in, node->quantization);
-        if (or_add) (*or_add)++;
+    if (n_ones != 0) return;
+    if (tnn_grow_on(g_bp_net)) {
+        if (!tnn_grow_want_or(node, d_and)) return;
+    } else if (n >= max_or) {
+        return;
     }
+    node->or_row = or_append_unit(node->or_row, in, node->quantization);
+    if (or_add) (*or_add)++;
 }
 
 static void or_prune_identities(AndNode *node, unsigned *or_drop)
@@ -1363,13 +1403,15 @@ static bool and_backward(AndNode *node, const InOutNode *x,
                          int dynamic, size_t max_or,
                          unsigned *or_add, unsigned *or_drop)
 {
-    if (dynamic)
-        or_ensure_dummy(node, inout_count(x), max_or, or_add);
-
-    compute_accums(node);
+    if (tnn_ln_bit(LN_LOGZ))
+        tnn_ln_and_accums(node);
+    else
+        compute_accums(node);
     OrNode *or_row = node->or_row;
     while (or_row) {
         double d_or = d_and * or_row->accum;
+        if (tnn_ln_on() && !tnn_ln_or_clip_gate(or_row->value, or_is_ones(or_row)))
+            d_or = 0.0;
         or_backward(or_row, x, d_or, lr);
         if (g_bp_net && g_bp_net->orcool) {
             double cut = orcool_cut_now(g_bp_net);
@@ -1386,10 +1428,13 @@ static bool and_backward(AndNode *node, const InOutNode *x,
 
     if (dynamic)
         or_prune_identities(node, or_drop);
+    if (dynamic)
+        or_ensure_dummy(node, inout_count(x), max_or, or_add, d_and);
     return true;
 }
 
-static void and_ensure_dummy(Layer *l, size_t index, unsigned *and_add)
+static void and_ensure_dummy(Layer *l, size_t index, unsigned *and_add,
+                             double d_z)
 {
     size_t n = 0, n_ones = 0;
     AndNode *a = l->and_row;
@@ -1400,20 +1445,25 @@ static void and_ensure_dummy(Layer *l, size_t index, unsigned *and_add)
         }
         a = a->right;
     }
-    size_t cap = ap_on(AP_BUDGET) ? 2 : DEFAULT_MAX_AND;
-    if ((ap_on(AP_TIMES) || ap_on(AP_TENS)) && g_bp_net && g_bp_net->orcool_step % 32u != 0)
-        return;
-    if (ap_on(AP_STUCK)) {
-        if (!dummy_ors_idle(l, index)) return;
-        size_t max_or = g_bp_net ? g_bp_net->max_or : DEFAULT_MAX_OR;
-        if (max_live_or_count(l, index) + 1 < max_or) return;
+    if (n_ones != 0) return;
+    if (tnn_grow_on(g_bp_net)) {
+        if (!tnn_grow_want_and(l, index, d_z)) return;
+    } else {
+        size_t cap = ap_on(AP_BUDGET) ? 2 : DEFAULT_MAX_AND;
+        if ((ap_on(AP_TIMES) || ap_on(AP_TENS)) && g_bp_net
+            && g_bp_net->orcool_step % 32u != 0)
+            return;
+        if (ap_on(AP_STUCK)) {
+            if (!dummy_ors_idle(l, index)) return;
+            size_t max_or = g_bp_net ? g_bp_net->max_or : DEFAULT_MAX_OR;
+            if (max_live_or_count(l, index) + 1 < max_or) return;
+        }
+        if (n >= cap) return;
     }
     size_t pol = ap_on(AP_DEGREE) ? 1 : DEFAULT_OR_FACTORS;
-    if (n_ones == 0 && n < cap) {
-        double q = l->and_row ? l->and_row->quantization : DEFAULT_QUANT;
-        l->and_row = and_append_ones(l->and_row, l->in_size, index, pol, q);
-        if (and_add) (*and_add)++;
-    }
+    double q = l->and_row ? l->and_row->quantization : DEFAULT_QUANT;
+    l->and_row = and_append_ones(l->and_row, l->in_size, index, pol, q);
+    if (and_add) (*and_add)++;
 }
 
 static void and_prune_identities(Layer *l, size_t index, unsigned *and_drop)
@@ -1430,7 +1480,7 @@ static void and_prune_identities(Layer *l, size_t index, unsigned *and_drop)
         if (a->right_index == index) {
             int ones = and_is_ones(a);
             /* Identity And = all Ors ≈ (1,0). Keep one. Drop extras. */
-            if (ones && n_ones > 0) {
+            if ((ones && n_ones > 0) || tnn_ln_zero_expn(a)) {
                 l->and_row = and_drop_at(l->and_row, a);
                 n--;
                 if (and_drop) (*and_drop)++;
@@ -1468,20 +1518,27 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
             while (found->right) found = found->right;
             if (and_add) (*and_add)++;
         }
-        if (dynamic)
-            and_ensure_dummy(l, d->right_index, and_add);
         /* Hidden: z_i = Π_r And_{i,r}^{a_{i,r}}  (a=1 if not ln).
            Tail tanh: y_i = tanh(z_i/τ), ∂y_i/∂z_i = (1-y_i²)/τ.
            Tail ln:   y_i = sign(z_i) ln(1+|z_i|/τ),
                       ∂y_i/∂z_i = 1/(τ+|z_i|),
                       ∂z_i/∂And_{i,r} = z_i a_{i,r} / And_{i,r},
                       ∂z_i/∂a_{i,r}   = z_i log|And_{i,r}|. */
-        double prod = 1.0;
-        AndNode *t = l->and_row;
-        while (t) {
-            if (t->right_index == d->right_index) prod *= and_term(t);
-            t = t->right;
+        TnnLnZ ev;
+        ev.z = 1.0;
+        ev.gate = 1.0;
+        ev.ell = 0.0;
+        ev.ell_s = 0.0;
+        if (ap_on(AP_LOG))
+            ev = tnn_ln_eval(l->and_row, d->right_index);
+        else {
+            AndNode *u = l->and_row;
+            while (u) {
+                if (u->right_index == d->right_index) ev.z *= u->value;
+                u = u->right;
+            }
         }
+        double prod = ev.z;
         double dprod = d->value;
         if (!l->next) {
             double tau = tail_tau(l, d->right_index);
@@ -1489,25 +1546,19 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
             dprod *= tail_dydz(prod, y, tau);
             if (!isfinite(dprod)) dprod = 0.0;
         }
-        t = l->and_row;
+        AndNode *t = l->and_row;
         while (t) {
             if (t->right_index == d->right_index) {
                 double others = 0.0;
                 if (isfinite(prod) && fabs(t->value) > 1e-12) {
                     others = prod / t->value;
                     if (ap_on(AP_LOG))
-                        others *= t->expn;
+                        others *= t->expn * ev.gate;
                 }
                 if (!isfinite(others)) others = 0.0;
                 t->grad = dprod * others;
-                if (ap_on(AP_LOG)) {
-                    double g_a = 0.0;
-                    if (isfinite(prod) && fabs(t->value) > 1e-12)
-                        g_a = dprod * prod * log(fabs(t->value));
-                    if (!isfinite(g_a)) g_a = 0.0;
-                    t->expn_grad = g_a;
-                    t->expn = snap_quant(t->expn - lr * g_a, t->quantization);
-                }
+                if (ap_on(AP_LOG))
+                    tnn_ln_step_expn(t, dprod, prod, ev.gate, lr);
             }
             t = t->right;
         }
@@ -1554,6 +1605,8 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
         }
         if (dynamic)
             and_prune_identities(l, d->right_index, and_drop);
+        if (dynamic)
+            and_ensure_dummy(l, d->right_index, and_add, dprod);
         d = d->right;
     }
     {
@@ -1618,7 +1671,10 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
 void network_backward(Network *net, const InOutNode *dloss)
 {
     g_bp_net = net;
+    tnn_ln_bind(net);
+    tnn_grow_bind(net);
     if (net->orcool || net->andpol) net->orcool_step++;
+    net->last_dloss_l1 = tnn_layer_l1(dloss);
     const InOutNode *din = dloss;
     Layer *l = net->tail;
     while (l) {
@@ -1631,13 +1687,12 @@ void network_backward(Network *net, const InOutNode *dloss)
         l = l->prev;
     }
 
-    if (net->layer_probe && net->dynamic && net->depth < net->max_depth
+    if (net->layerpol)
+        tnn_layer_step(net);
+    else if (net->layer_probe && net->dynamic && net->depth < net->max_depth
         && net->tail && net->depth == 1) {
-        /* At most one automatic hidden layer: only from a single-layer net,
-           and only when the input-side gradient is large. */
-        double mag = 0.0;
-        const InOutNode *p = net->tail->din;
-        while (p) { mag += fabs(p->value); p = p->right; }
+        /* Legacy one-shot probe: depth-1 net, ||∂L/∂x||_1 > 3. */
+        double mag = tnn_layer_l1(net->tail->din);
         if (mag > 3.0) {
             network_insert_identity(net, net->tail);
             net->layer_add++;
@@ -1662,10 +1717,13 @@ void network_train(Network *net,
 
     if ((net->orcool || net->andpol) && net->orcool_span == 0 && epochs && n_samples)
         net->orcool_span = (unsigned)(epochs * n_samples);
+    tnn_ln_bind(net);
+    tnn_grow_bind(net);
+    tnn_ln_init_expn(net);
 
     /* next: Or cap tracks input arity. Wide files get more linear
-       factors; iris (d=4) stays at 8. */
-    if (net->andpol & AP_NEXT) {
+       factors; iris (d=4) stays at 8. Scale recipes ignore max_or. */
+    if (!tnn_grow_on(net) && ((net->andpol & AP_NEXT) || tnn_ln_bit(LN_WIDE))) {
         double s = 2.0 * sqrt((double)(in ? in : 1));
         size_t k = (size_t)(s + 0.5);
         if (k < DEFAULT_MAX_OR) k = DEFAULT_MAX_OR;
@@ -1677,8 +1735,8 @@ void network_train(Network *net,
         for (Layer *l = net->head; l; l = l->next) {
             AndNode *a = l->and_row;
             while (a) {
-                or_ensure_dummy(a, l->in_size, net->max_or, NULL);
-                and_ensure_dummy(l, a->right_index, NULL);
+                or_ensure_dummy(a, l->in_size, net->max_or, NULL, 0.0);
+                and_ensure_dummy(l, a->right_index, NULL, 0.0);
                 a = a->right;
             }
         }

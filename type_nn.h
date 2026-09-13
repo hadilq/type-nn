@@ -50,6 +50,7 @@ typedef struct AndNode {
     double quantization;
     double expn;               /* a_{i,r} in z_i = Π_r And_{i,r}^{a_{i,r}} */
     double expn_grad;          /* ∂L/∂a_{i,r} */
+    double and_gate;           /* ∂λ̃/∂λ for log-space And product */
     struct OrNode *or_row;
     size_t right_index;
     int probe_cool;
@@ -103,7 +104,18 @@ typedef struct {
     unsigned orcool_step;
     unsigned orcool_span;      /* steps over which cool/cut anneal; 0 → n*epochs */
     unsigned andpol;           /* And-preference bits; see network_set_andpol */
+    unsigned lnpol;            /* type-nn-ln recipe bits; see type_nn_ln.h */
+    unsigned layerpol;         /* hidden-layer insert/drop; type_nn_layer.h */
+    unsigned growpol;          /* Or/And spawn gates; type_nn_grow.h */
+    double   last_dloss_l1;    /* ||y-t||_1 of the sample just backwarded */
 } Network;
+
+#define TNN_AP_BUDGET 2u
+#define TNN_AP_STUCK  4u
+#define TNN_AP_ANDTAU 64u
+#define TNN_AP_TENS   512u
+#define TNN_AP_TSGD   1024u
+#define TNN_AP_LOG    2048u
 
 /* ── print helpers ── */
 void and_print(const AndNode *node, const char *label);
@@ -123,6 +135,7 @@ void     network_set_verbose(Network *net, int enabled);
 void     network_set_orcool(Network *net, int enabled);
 void     network_set_orcool_span(Network *net, unsigned span);
 void     network_set_andpol(Network *net, const char *name);
+void     network_set_layerpol(Network *net, const char *name);
 size_t   network_depth(const Network *net);
 
 /* Insert an identity hidden layer in front of `at` (NULL = before tail). */

@@ -19,12 +19,17 @@ fi
 ALTS="type_nn_stack.c type_nn_win.c type_nn_cmlp.c"
 
 echo "== building bench_type_nn + bench_alts =="
-$CC $CFLAGS -o /tmp/bench_type_nn type_nn.c bench_type_nn.c dataset.c -lm
+$CC $CFLAGS -o /tmp/bench_type_nn type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c bench_type_nn.c dataset.c -lm
 $CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c $ALTS -lm
 
 echo "== type-nn (Or/And probes, no layer probe)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 /tmp/bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
-for mode in orcool budget stuck timescale asym gres andtau degree soft combo ta tag tap tas next ln; do
+# Iteration 5: no max_or / max_and. Width and depth from BP statistics.
+for mode in ln-v2w \
+            scale-keep scale-ratio scale-energy scale-jac scale-slack scale-sign \
+            scale-mix scale-ej scale-layer \
+            ln-v2w+scale-energy ln-v2w+scale-jac ln-v2w+scale-mix ln-v2w+scale-ej \
+            ln-v2w+scale-layer; do
   echo "== type-nn-$mode =="
   /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
 done

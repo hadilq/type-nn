@@ -74,32 +74,117 @@ any Or on that output is cooling. Ors train first; Ands open later.
     next       tap + budget + max_or = clamp(round(2√d), 8, 16)
     ln         original type-nn algebra; tail tanh → log readout below.
 
-## type-nn-ln
+## type-nn-ln  (implementation: type_nn_ln.c / type_nn_ln.h)
 
-Same And/Or product as original type-nn. Indices: output head \(i\),
-clause \(r\), linear factor \(t\), feature \(j\). Hidden layers stay \(z_i\).
+Indices: output head \(i\), clause \(r\), linear factor \(t\), feature \(j\).
+Hidden layers stay \(z_i\). The default recipe (`ln`, `ln-logz`) evaluates
+both products in log-space so a long And list cannot overflow.
 
-    Or_{i,r,t} = b_{i,r,t} + Σ_j W_{i,r,t,j} x_j
-    And_{i,r}  = Π_t Or_{i,r,t}
-    a_{i,r}    born at 1
-    z_i        = Π_r And_{i,r}^{a_{i,r}}      # sign(A)|A|^a so z_i ∈ ℝ
-    τ          = √d                           # d = tail input arity
-    y_i        = sign(z_i) ln(1 + |z_i|/τ)    # real completion of ln(1+z_i/τ)
+    Or_{i,r,t}   = b_{i,r,t} + Σ_j W_{i,r,t,j} x_j
+    Õ_{i,r,t}    = clip(Or, ±4)                 # LN_ORCLIP, live Or only
+    σ_{i,r}      = Π_t sign(Õ_{i,r,t})
+    λ_{i,r}      = Σ_t log max(|Õ_{i,r,t}|, ε)
+    λ̃_{i,r}     = clip(λ_{i,r}, −L, L)         # L = 20
+    γ_{i,r}      = 1_{|λ_{i,r}| < L}
+    A_{i,r}      = σ_{i,r} exp(λ̃_{i,r})
+    S_i          = Π_r sign(A_{i,r})
+    ℓ_i          = Σ_r a_{i,r} log max(|A_{i,r}|, ε)
+    ℓ̃_i         = clip(ℓ_i, −L, L)
+    g_i          = 1_{|ℓ_i| < L}
+    z_i          = S_i exp(ℓ̃_i)
+    τ_i          = √d                           # d = tail input arity
+    y_i          = sign(z_i) ln(1 + |z_i|/τ_i)
 
-    ∂L / ∂y_i                = y_i − t_i
-    ∂y_i / ∂z_i              = 1 / (τ + |z_i|)
-    ∂z_i / ∂And_{i,r}        = z_i a_{i,r} / And_{i,r}
-    ∂z_i / ∂a_{i,r}          = z_i log |And_{i,r}|
-    ∂And_{i,r} / ∂Or_{i,r,t} = Π_{s≠t} Or_{i,r,s}
-    ∂Or_{i,r,t} / ∂W_{i,r,t,j} = x_j
-    ∂Or_{i,r,t} / ∂b_{i,r,t}   = 1
+`ln-naive` skips the log-space rewrite and uses \(A=\Pi Õ\),
+\(z=\Pi \mathrm{sign}(A)|A|^a\) directly.
 
-And^{a} := sign(And)|And|^{a} keeps z_i real when And < 0.
-Dummy And ≡ 1 ⇒ 1^{a} ≡ 1 and ∂z/∂a = z log 1 = 0, so dummy
-exponents do not train. a_{i,r}=1 recovers the old product.
-ln(1+z_i/τ) is only real for z_i > −τ; the abs is that
-completion. For z_i ≥ 0 the two agree. y_i is C¹ at 0.
+    ∂L / ∂y_i                 = y_i − t_i
+    ∂y_i / ∂z_i               = 1 / (τ_i + |z_i|)
+    ∂z_i / ∂A_{i,r}           = z_i · g_i · a_{i,r} / A_{i,r}
+    ∂z_i / ∂a_{i,r}           = z_i · g_i · log max(|A_{i,r}|, ε)
+    ∂A_{i,r} / ∂Õ_{i,r,t}     = A_{i,r} · γ_{i,r} / Õ_{i,r,t}
+    ∂Õ / ∂Or                  = 1_{|Or| < 4}            # LN_ORCLIP
+    ∂Or / ∂W_{i,r,t,j}        = x_j
+    ∂Or / ∂b                  = 1
 
-τ = √d · max(1, n_live_And). Dummy identity Ands are not clauses.
+The hard clip is not differentiable at \(\pm L\); the code takes the
+almost-everywhere derivative \(0\) on the wall, \(1\) inside. Dummy
+And \(\equiv 1\) contributes \(\log 1 = 0\) and \(\partial z/\partial a = 0\).
+\(a_{i,r}=1\) recovers the untyped product. \(y_i\) is \(C^1\) at \(0\).
+
+Recipes (`./bench_type_nn TASK name`), each bit isolated on top of LOGZ:
+
+    ln / ln-logz   log-space And and z, no extra policy
+    ln-naive       linear product (control)
+    ln-orclip      + clip live Or to ±4
+    ln-alr         + η_a = η/10
+    ln-apos        + a ≥ 0, prune a≈0
+    ln-asmall      + a born at 1/√d
+    ln-y01         + y /= ln 2  so |z|=τ ⇒ |y|=1
+    ln-atau        + τ = √d · Σ|a| on live Ands
+    ln-stuck       + dummy And waits for full/idle Ors
+    ln-tas         + 32-tick dummy-And SGD + andtau
+    ln-budget      + one live And + one dummy per output
+    ln-next        + tap + budget + andtau
+    ln-stable      logz + orclip
+    ln-clock       logz + orclip + tas
+    ln-best        kitchen sink (usually worse than its parts)
+
+Iteration 2, combinations of the bits that actually moved a hard task:
+
+    ln-v2          a≥0 + η_a=η/10
+    ln-aw          a≥0 + max_or = clamp(2√d, 8, 16)
+    ln-v2w         v2 + wide Or          <- best all-round
+    ln-v2t         v2 + tas clock        <- best ionosphere / iris
+    ln-v3          v2t + a∈[0,3] + wide Or
+    ln-cap         a∈[0,3]
+    ln-v2c         v2 + a∈[0,3]
+    ln-v2a         v2 + τ = √d · Σ|a|
+
+## Or / And spawn (type_nn_grow.c)
+
+No `max_or`, no `max_and` on any `scale-*` recipe. Dummy rule only.
+
+    scale-keep     always replace a missing dummy
+    scale-resid    |incoming| > T
+    scale-ratio    |incoming| > κ · max|child grad|
+    scale-dead     children still, incoming large
+    scale-or       ratio on Or only
+    scale-and      ratio on And only
+    scale-energy   |parent| > κ · Σ|live child grad|
+    scale-jac      |parent| > T and Σ|∂L/∂W|_live < κ_j · |parent|
+    scale-slack    |parent| > T and every live child is specialized
+    scale-sign     |parent| > T and live grads fight or miss sign
+    scale-mix      energy on Or, jac on And
+    scale-ej       energy AND jac on both axes
+    scale-layer    scale-ej + Ljac
+
+T = 0.30, κ = 2, κ_j = 0.25, specialized band = 0.5.
+Combine: `ln-v2w+scale-mix`.
+
+## Hidden-layer insert / drop (type_nn_layer.c)
+
+Same dummy rule as Or and And. No wall-clock.
+
+    insert  identity map in front of the tail (function unchanged)
+    train   back-prop may move the identity
+    drop    hidden is identity AND ||∂L/∂W||_1 ≈ 0
+
+Never stack a second identity: the live hidden has to leave id first.
+
+    Lgrad     insert if ||∂L/∂x||_1 > 3          (legacy one-shot)
+    Lresid    insert if ||y−t||_1 > 1
+    Lratio    insert if ||∂L/∂x||_1 > 2 ||∂L/∂W||_1
+    Ldummy    keep exactly one identity hidden
+    Ldrop     only the drop half
+    Lwide     Lgrad, hidden width = 2·in
+    Lnarrow   Lgrad, hidden width = max(out, ⌈in/2⌉)
+    Lboth     Lgrad + drop
+    Lcap      residual large AND Or/And lists full AND ||dW|| small vs residual
+    Lfull     residual large AND lists full
+    Lstuck    residual large AND ||dW|| small
+
+Combine: `ln-v2w+Lcap`. Depth capped at 2 this round. One structural
+edit per backward (drop XOR insert).
 
 `make bench` rewrites BOARD.txt from the table it prints.

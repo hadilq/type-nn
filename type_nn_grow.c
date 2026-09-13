@@ -1,0 +1,344 @@
+#include "type_nn_grow.h"
+#include "type_nn_layer.h"
+
+#include <math.h>
+#include <string.h>
+
+static Network *g_grow = NULL;
+
+void tnn_grow_bind(Network *net)
+{
+    g_grow = net;
+}
+
+int tnn_grow_on(const Network *net)
+{
+    return net && net->growpol != 0;
+}
+
+int tnn_grow_apply(Network *net, const char *name)
+{
+    if (!net || !name || !name[0]) return 0;
+    unsigned p = 0;
+    if (!strcmp(name, "scale-off") || !strcmp(name, "Goff"))
+        p = 0;
+    else if (!strcmp(name, "scale-keep") || !strcmp(name, "Gkeep"))
+        p = TNN_G_OR_KEEP | TNN_G_AND_KEEP;
+    else if (!strcmp(name, "scale-resid") || !strcmp(name, "Gresid"))
+        p = TNN_G_OR_RESID | TNN_G_AND_RESID;
+    else if (!strcmp(name, "scale-ratio") || !strcmp(name, "Gratio"))
+        p = TNN_G_OR_RATIO | TNN_G_AND_RATIO;
+    else if (!strcmp(name, "scale-dead") || !strcmp(name, "Gdead"))
+        p = TNN_G_OR_DEAD | TNN_G_AND_DEAD;
+    else if (!strcmp(name, "scale-or") || !strcmp(name, "Gor"))
+        p = TNN_G_OR_RATIO;
+    else if (!strcmp(name, "scale-and") || !strcmp(name, "Gand"))
+        p = TNN_G_AND_RATIO;
+    else if (!strcmp(name, "scale-refuse") || !strcmp(name, "Grefuse"))
+        p = TNN_G_OR_RATIO | TNN_G_AND_RATIO | TNN_G_REFUSE;
+    else if (!strcmp(name, "scale-energy") || !strcmp(name, "Genergy"))
+        p = TNN_G_OR_ENERGY | TNN_G_AND_ENERGY;
+    else if (!strcmp(name, "scale-jac") || !strcmp(name, "Gjac"))
+        p = TNN_G_OR_JAC | TNN_G_AND_JAC;
+    else if (!strcmp(name, "scale-slack") || !strcmp(name, "Gslack"))
+        p = TNN_G_OR_SLACK | TNN_G_AND_SLACK;
+    else if (!strcmp(name, "scale-sign") || !strcmp(name, "Gsign"))
+        p = TNN_G_OR_SIGN | TNN_G_AND_SIGN;
+    else if (!strcmp(name, "scale-mix") || !strcmp(name, "Gmix"))
+        p = TNN_G_OR_ENERGY | TNN_G_AND_JAC;
+    else if (!strcmp(name, "scale-ej") || !strcmp(name, "Gej"))
+        p = TNN_G_OR_ENERGY | TNN_G_AND_ENERGY | TNN_G_OR_JAC | TNN_G_AND_JAC;
+    else if (!strcmp(name, "scale-layer") || !strcmp(name, "Glayer"))
+        p = TNN_G_OR_ENERGY | TNN_G_AND_ENERGY | TNN_G_OR_JAC | TNN_G_AND_JAC
+          | TNN_G_REFUSE;
+    else
+        return 0;
+
+    net->growpol = p;
+    g_grow = net;
+    /* No numeric cap when a scale recipe is on. */
+    if (p)
+        net->max_or = (size_t)-1 / 4;
+    return 1;
+}
+
+static int or_is_dummy(const OrNode *o)
+{
+    if (!o) return 0;
+    if (fabs(o->bias.value - 1.0) > 0.2) return 0;
+    const WeightNode *w = o->weight;
+    while (w) {
+        if (fabs(w->value) > 0.2) return 0;
+        w = w->right;
+    }
+    return 1;
+}
+
+static int has_dummy_or(const AndNode *a)
+{
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (or_is_dummy(o)) return 1;
+        o = o->right;
+    }
+    return 0;
+}
+
+static int and_is_dummy_g(const AndNode *a)
+{
+    if (!a || !a->or_row) return 0;
+    const OrNode *o = a->or_row;
+    while (o) {
+        if (!or_is_dummy(o)) return 0;
+        o = o->right;
+    }
+    return 1;
+}
+
+static double max_live_or_grad(const AndNode *a)
+{
+    double m = 0.0;
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (!or_is_dummy(o) && fabs(o->grad) > m) m = fabs(o->grad);
+        o = o->right;
+    }
+    return m;
+}
+
+static double sum_live_or_grad(const AndNode *a)
+{
+    double s = 0.0;
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (!or_is_dummy(o)) s += fabs(o->grad);
+        o = o->right;
+    }
+    return s;
+}
+
+static double sum_live_or_wgrad(const AndNode *a)
+{
+    double s = 0.0;
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (!or_is_dummy(o)) {
+            s += fabs(o->bias.grad);
+            const WeightNode *w = o->weight;
+            while (w) {
+                s += fabs(w->grad);
+                w = w->right;
+            }
+        }
+        o = o->right;
+    }
+    return s;
+}
+
+static int live_ors_specialized(const AndNode *a)
+{
+    int n_live = 0;
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (!or_is_dummy(o)) {
+            n_live++;
+            double wl1 = fabs(o->bias.value - 1.0);
+            const WeightNode *w = o->weight;
+            while (w) {
+                wl1 += fabs(w->value);
+                w = w->right;
+            }
+            if (wl1 < TNN_G_SPEC) return 0;
+        }
+        o = o->right;
+    }
+    return n_live > 0;
+}
+
+static int live_or_sign_conflict(const AndNode *a, double d_and)
+{
+    int pos = 0, neg = 0;
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (!or_is_dummy(o)) {
+            if (o->grad > TNN_G_DEAD) pos = 1;
+            if (o->grad < -TNN_G_DEAD) neg = 1;
+        }
+        o = o->right;
+    }
+    if (pos && neg) return 1;
+    if (!pos && !neg) return 1;
+    if (d_and > TNN_G_DEAD && !pos) return 1;
+    if (d_and < -TNN_G_DEAD && !neg) return 1;
+    return 0;
+}
+
+static double max_live_and_grad(const Layer *l, size_t index)
+{
+    double m = 0.0;
+    const AndNode *a = l ? l->and_row : NULL;
+    while (a) {
+        if (a->right_index == index && !and_is_dummy_g(a)
+            && fabs(a->grad) > m)
+            m = fabs(a->grad);
+        a = a->right;
+    }
+    return m;
+}
+
+static double sum_live_and_grad(const Layer *l, size_t index)
+{
+    double s = 0.0;
+    const AndNode *a = l ? l->and_row : NULL;
+    while (a) {
+        if (a->right_index == index && !and_is_dummy_g(a))
+            s += fabs(a->grad);
+        a = a->right;
+    }
+    return s;
+}
+
+static double sum_live_and_wgrad(const Layer *l, size_t index)
+{
+    double s = 0.0;
+    const AndNode *a = l ? l->and_row : NULL;
+    while (a) {
+        if (a->right_index == index && !and_is_dummy_g(a))
+            s += sum_live_or_wgrad(a) + fabs(a->expn_grad);
+        a = a->right;
+    }
+    return s;
+}
+
+static int live_ands_specialized(const Layer *l, size_t index)
+{
+    int n_live = 0;
+    const AndNode *a = l ? l->and_row : NULL;
+    while (a) {
+        if (a->right_index == index && !and_is_dummy_g(a)) {
+            n_live++;
+            if (fabs(a->value - 1.0) < TNN_G_SPEC) return 0;
+        }
+        a = a->right;
+    }
+    return n_live > 0;
+}
+
+static int live_and_sign_conflict(const Layer *l, size_t index, double d_z)
+{
+    int pos = 0, neg = 0;
+    const AndNode *a = l ? l->and_row : NULL;
+    while (a) {
+        if (a->right_index == index && !and_is_dummy_g(a)) {
+            if (a->grad > TNN_G_DEAD) pos = 1;
+            if (a->grad < -TNN_G_DEAD) neg = 1;
+        }
+        a = a->right;
+    }
+    if (pos && neg) return 1;
+    if (!pos && !neg) return 1;
+    if (d_z > TNN_G_DEAD && !pos) return 1;
+    if (d_z < -TNN_G_DEAD && !neg) return 1;
+    return 0;
+}
+
+static int gate_or(unsigned p, const AndNode *a, double ad, double d_and)
+{
+    int energy = ad > TNN_G_K * (sum_live_or_grad(a) + 1e-12);
+    int jac    = ad > TNN_G_T && sum_live_or_wgrad(a) < TNN_G_JAC_K * ad;
+    int both_ej = (p & TNN_G_OR_ENERGY) && (p & TNN_G_OR_JAC);
+
+    if (p & TNN_G_OR_KEEP) return 1;
+    if (both_ej) return energy && jac;
+    if (p & TNN_G_OR_RESID) return ad > TNN_G_T;
+    if (p & TNN_G_OR_RATIO) {
+        double mo = max_live_or_grad(a);
+        if (mo < 1e-12) mo = 1e-12;
+        return ad > TNN_G_K * mo;
+    }
+    if (p & TNN_G_OR_DEAD)
+        return ad > TNN_G_T && max_live_or_grad(a) < TNN_G_DEAD;
+    if (p & TNN_G_OR_ENERGY) return energy;
+    if (p & TNN_G_OR_JAC) return jac;
+    if (p & TNN_G_OR_SLACK)
+        return ad > TNN_G_T && live_ors_specialized(a);
+    if (p & TNN_G_OR_SIGN)
+        return ad > TNN_G_T && live_or_sign_conflict(a, d_and);
+    return 0;
+}
+
+static int gate_and(unsigned p, const Layer *l, size_t index,
+                    double ad, double d_z)
+{
+    int energy = ad > TNN_G_K * (sum_live_and_grad(l, index) + 1e-12);
+    int jac    = ad > TNN_G_T
+              && sum_live_and_wgrad(l, index) < TNN_G_JAC_K * ad;
+    int both_ej = (p & TNN_G_AND_ENERGY) && (p & TNN_G_AND_JAC);
+
+    if (p & TNN_G_AND_KEEP) return 1;
+    if (both_ej) return energy && jac;
+    if (p & TNN_G_AND_RESID) return ad > TNN_G_T;
+    if (p & TNN_G_AND_RATIO) {
+        double ma = max_live_and_grad(l, index);
+        if (ma < 1e-12) ma = 1e-12;
+        return ad > TNN_G_K * ma;
+    }
+    if (p & TNN_G_AND_DEAD)
+        return ad > TNN_G_T && max_live_and_grad(l, index) < TNN_G_DEAD;
+    if (p & TNN_G_AND_ENERGY) return energy;
+    if (p & TNN_G_AND_JAC) return jac;
+    if (p & TNN_G_AND_SLACK)
+        return ad > TNN_G_T && live_ands_specialized(l, index);
+    if (p & TNN_G_AND_SIGN)
+        return ad > TNN_G_T && live_and_sign_conflict(l, index, d_z);
+    return 0;
+}
+
+int tnn_grow_want_or(const AndNode *a, double d_and)
+{
+    if (!g_grow || !a) return 0;
+    unsigned p = g_grow->growpol;
+    if (has_dummy_or(a)) return 0;
+    if (!isfinite(d_and)) return 0;
+    return gate_or(p, a, fabs(d_and), d_and);
+}
+
+int tnn_grow_want_and(const Layer *l, size_t index, double d_z)
+{
+    if (!g_grow || !l) return 0;
+    unsigned p = g_grow->growpol;
+    const AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index && and_is_dummy_g(a))
+            return 0;
+        a = a->right;
+    }
+    if (!isfinite(d_z)) return 0;
+    return gate_and(p, l, index, fabs(d_z), d_z);
+}
+
+int tnn_grow_probes_refused(const Layer *l, size_t index)
+{
+    if (!l) return 0;
+    int dummy_and = 0, dummy_and_dead = 0;
+    int dummy_or = 0, dummy_or_dead = 0;
+    const AndNode *a = l->and_row;
+    while (a) {
+        if (a->right_index == index) {
+            if (and_is_dummy_g(a)) {
+                dummy_and = 1;
+                if (fabs(a->grad) < TNN_G_DEAD) dummy_and_dead = 1;
+            }
+            const OrNode *o = a->or_row;
+            while (o) {
+                if (or_is_dummy(o)) {
+                    dummy_or = 1;
+                    if (fabs(o->grad) < TNN_G_DEAD) dummy_or_dead = 1;
+                }
+                o = o->right;
+            }
+        }
+        a = a->right;
+    }
+    return dummy_and && dummy_and_dead && dummy_or && dummy_or_dead;
+}

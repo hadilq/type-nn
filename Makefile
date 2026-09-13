@@ -9,14 +9,16 @@ ALTS = type_nn_stack.c type_nn_win.c type_nn_cmlp.c
 
 all: type-nn test_type_nn
 
-type-nn: type_nn.c run.c type_nn.h
-	$(CC) $(CFLAGS) -o $@ type_nn.c run.c $(LDFLAGS)
+LN = type_nn_ln.c type_nn_ln.h type_nn_layer.c type_nn_layer.h type_nn_grow.c type_nn_grow.h
 
-test_type_nn: type_nn.c test_type_nn.c type_nn.h
-	$(CC) $(CFLAGS) -o $@ type_nn.c test_type_nn.c $(LDFLAGS)
+type-nn: type_nn.c run.c type_nn.h $(LN)
+	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c run.c $(LDFLAGS)
 
-bench_type_nn: type_nn.c bench_type_nn.c dataset.c type_nn.h dataset.h
-	$(CC) $(CFLAGS) -o $@ type_nn.c bench_type_nn.c dataset.c $(LDFLAGS)
+test_type_nn: type_nn.c test_type_nn.c type_nn.h $(LN)
+	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c test_type_nn.c $(LDFLAGS)
+
+bench_type_nn: type_nn.c bench_type_nn.c dataset.c type_nn.h dataset.h $(LN)
+	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c bench_type_nn.c dataset.c $(LDFLAGS)
 
 bench_alts: bench_alts.c dataset.c dataset.h type_nn_alt.h $(ALTS)
 	$(CC) $(CFLAGS) -o $@ bench_alts.c dataset.c $(ALTS) $(LDFLAGS)
@@ -28,9 +30,9 @@ test: test_type_nn test_alts
 	./test_type_nn
 	./test_alts
 
-test-asan: type_nn.c test_type_nn.c type_nn.h
+test-asan: type_nn.c test_type_nn.c type_nn.h $(LN)
 	$(CC) -std=c11 -g -O0 -Wall -Wextra -I. -fsanitize=address,undefined \
-	    -o test_type_nn_asan type_nn.c test_type_nn.c $(LDFLAGS)
+	    -o test_type_nn_asan type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c test_type_nn.c $(LDFLAGS)
 	./test_type_nn_asan
 
 demo: type-nn
