@@ -85,6 +85,17 @@ int tnn_grow_apply(Network *net, const char *name)
         net->sched_cut  = 0.75;
         g_grow = net;
         return 1;
+    } else if (!strcmp(name, "scale-sched-bal") || !strcmp(name, "Gsched-b")) {
+        /* Cap width at 2. Early: energy AND jac. Late cut starts late
+           so mid jac can finish the fit before prune. */
+        net->growpol |= TNN_G_SCHED | TNN_G_CAP
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = TNN_G_CAP_OR;
+        net->sched_grow = 0.30;
+        net->sched_cut  = 0.80;
+        g_grow = net;
+        return 1;
     } else
         return 0;
 
@@ -336,13 +347,29 @@ int tnn_grow_want_or(const AndNode *a, double d_and)
 {
     if (!g_grow || !a) return 0;
     unsigned p = g_grow->growpol;
-    if (has_dummy_or(a)) return 0;
     if (!isfinite(d_and)) return 0;
+    if ((p & TNN_G_CAP) && (p & TNN_G_SCHED)) {
+        double u = network_progress(g_grow);
+        double grow = g_grow->sched_grow > 0 ? g_grow->sched_grow : 0.30;
+        /* Early: raise the Or cap on the clock (2 → 4). Residual
+           can push one more, up to 6, before the cut. */
+        size_t floor = 2;
+        if (grow > 0.0 && u < grow)
+            floor = 2 + (size_t)(u / grow * 3.0);
+        if (floor > 4) floor = 4;
+        if (g_grow->max_or < floor)
+            g_grow->max_or = floor;
+        size_t cap = g_grow->max_or ? g_grow->max_or : TNN_G_CAP_OR;
+        if (u < grow && g_grow->last_dloss_l1 > 0.15 && cap < 6)
+            g_grow->max_or = cap + 1;
+    }
+    if (has_dummy_or(a)) return 0;
     if (p & TNN_G_CAP) {
         size_t n = 0;
         const OrNode *o = a->or_row;
         while (o) { n++; o = o->right; }
-        if (n >= (g_grow->max_or ? g_grow->max_or : TNN_G_CAP_OR))
+        size_t cap = g_grow->max_or ? g_grow->max_or : TNN_G_CAP_OR;
+        if (n >= cap)
             return 0;
     }
     if (p & TNN_G_SCHED) {
@@ -350,9 +377,13 @@ int tnn_grow_want_or(const AndNode *a, double d_and)
         double grow = g_grow->sched_grow > 0 ? g_grow->sched_grow : 0.40;
         double cut  = g_grow->sched_cut  > 0 ? g_grow->sched_cut  : 0.60;
         if (u >= cut) return 0;
-        unsigned g = (u < grow)
-            ? (TNN_G_OR_ENERGY | TNN_G_OR_RESID)
-            : (TNN_G_OR_JAC);
+        unsigned g;
+        if (u < grow)
+            g = (p & TNN_G_CAP)
+                ? (TNN_G_OR_ENERGY | TNN_G_OR_JAC)   /* both: selective grow */
+                : (TNN_G_OR_ENERGY | TNN_G_OR_RESID);
+        else
+            g = TNN_G_OR_JAC;
         return gate_or(g, a, fabs(d_and), d_and);
     }
     return gate_or(p, a, fabs(d_and), d_and);
@@ -374,9 +405,13 @@ int tnn_grow_want_and(const Layer *l, size_t index, double d_z)
         double grow = g_grow->sched_grow > 0 ? g_grow->sched_grow : 0.40;
         double cut  = g_grow->sched_cut  > 0 ? g_grow->sched_cut  : 0.60;
         if (u >= cut) return 0;
-        unsigned g = (u < grow)
-            ? (TNN_G_AND_ENERGY | TNN_G_AND_RESID)
-            : (TNN_G_AND_JAC);
+        unsigned g;
+        if (u < grow)
+            g = (p & TNN_G_CAP)
+                ? (TNN_G_AND_ENERGY | TNN_G_AND_JAC)
+                : (TNN_G_AND_ENERGY | TNN_G_AND_RESID);
+        else
+            g = TNN_G_AND_JAC;
         return gate_and(g, l, index, fabs(d_z), d_z);
     }
     return gate_and(p, l, index, fabs(d_z), d_z);

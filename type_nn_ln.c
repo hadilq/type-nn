@@ -107,6 +107,8 @@ int tnn_ln_apply(Network *net, const char *name)
             lp |= LN_APOS | LN_TAUD;
         if (net->andpol & TNN_AP_LOG)
             ap = net->andpol;
+    } else if (!strcmp(name, "ln-body") || !strcmp(name, "ln-tanh")) {
+        lp |= LN_APOS | LN_ALR | LN_TANH_TAIL;
     } else if (!strcmp(name, "ln-adam")) {
         /* log-space + assembly a>0 + Adam on W, b, a, τ */
         lp |= LN_APOS | LN_ALR | LN_ADAM;

@@ -72,6 +72,7 @@
 #define LN_WIDE    512u   /* max_or = clamp(round(2√d), 8, 16) */
 #define LN_ADAM    1024u  /* Adam on W, b, a, and τ */
 #define LN_TAUD    2048u  /* legacy tail τ = √d (control; not the default) */
+#define LN_TANH_TAIL 4096u /* log-space And, tanh tail */
 
 #define LN_ELL_CAP 20.0   /* |ℓ̃| < 20,  e^{20} ≈ 4.85e8 */
 #define LN_LOG_EPS 1e-12

@@ -965,8 +965,7 @@ static int apply_one_recipe(Network *net, const char *n)
         return 1;
     }
     if (!strcmp(n, "scale-sched") || !strcmp(n, "scale-sched-tight")
-        || !strcmp(n, "scale-sched-wide")) {
-        tnn_ln_apply(net, "ln-v2");
+        || !strcmp(n, "scale-sched-wide") || !strcmp(n, "scale-sched-bal")) {
         tnn_grow_apply(net, n);
         tnn_layer_apply(net, "Lsched");
         return 1;
@@ -1209,7 +1208,7 @@ static double and_term(const AndNode *a)
 static double tail_readout(double z, double tau)
 {
     if (tau < 1e-12) tau = 1.0;
-    if (ap_on(AP_LOG))
+    if (ap_on(AP_LOG) && !tnn_ln_bit(LN_TANH_TAIL))
         return tnn_ln_readout(z, tau);
     return stable_tanh(z / tau);
 }
@@ -1217,7 +1216,7 @@ static double tail_readout(double z, double tau)
 static double tail_dydz(double z, double y, double tau)
 {
     if (tau < 1e-12) tau = 1.0;
-    if (ap_on(AP_LOG))
+    if (ap_on(AP_LOG) && !tnn_ln_bit(LN_TANH_TAIL))
         return tnn_ln_dydz(z, tau);
     if (!isfinite(y)) return 0.0;
     return (1.0 - y * y) / tau;
@@ -1817,13 +1816,34 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
                         th = TNN_G_PRUNE_T;
                     if (g_bp_net && (g_bp_net->growpol & TNN_G_SCHED)) {
                         double u = network_progress(g_bp_net);
-                        double cut = g_bp_net->sched_cut > 0 ? g_bp_net->sched_cut : 0.60;
+                        double cut = g_bp_net->sched_cut > 0 ? g_bp_net->sched_cut : 0.80;
                         if (u >= cut) {
                             double v = (u - cut) / (1.0 - cut + 1e-12);
-                            th = 0.015 + 0.05 * v;
+                            /* Mild abs cut only. Cap already bounds params. */
+                            th = 0.004 + 0.012 * v;
                         }
                     }
-                    o->weight = weight_prune(o->weight, th, 1);
+                    /* Do not drop a coordinate that still carries gradient. */
+                    if (g_bp_net && (g_bp_net->growpol & TNN_G_SCHED)) {
+                        WeightNode dummy = {0};
+                        dummy.right = o->weight;
+                        WeightNode *prev = &dummy;
+                        size_t n = weight_count(o->weight);
+                        while (prev->right) {
+                            WeightNode *cur = prev->right;
+                            int moving = fabs(cur->grad) > 1e-3;
+                            if (!moving && n > 1 && fabs(cur->value) < th) {
+                                prev->right = cur->right;
+                                free(cur);
+                                n--;
+                            } else {
+                                prev = cur;
+                            }
+                        }
+                        o->weight = dummy.right;
+                    } else {
+                        o->weight = weight_prune(o->weight, th, 1);
+                    }
                     if (g_bp_net && (g_bp_net->growpol & TNN_G_TOPK)
                         && !or_is_ones(o))
                         o->weight = weight_topk(o->weight, TNN_G_TOPK_N);
