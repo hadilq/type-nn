@@ -120,6 +120,8 @@ typedef struct {
     double   last_dloss_l1;    /* ||y-t||_1 of the sample just backwarded */
     unsigned long adam_t;      /* Adam step index (1-based while training) */
     double   adam_b1p, adam_b2p;
+    double   sched_grow;     /* u < grow: scale Or/And/Layer up */
+    double   sched_cut;      /* u > cut: refuse spawn, prune */
 } Network;
 
 #define TNN_AP_BUDGET 2u
@@ -149,6 +151,7 @@ void     network_set_orcool_span(Network *net, unsigned span);
 void     network_set_andpol(Network *net, const char *name);
 void     network_set_layerpol(Network *net, const char *name);
 size_t   network_depth(const Network *net);
+double   network_progress(const Network *net); /* u in [0,1] */
 
 /* Insert an identity hidden layer in front of `at` (NULL = before tail). */
 Layer   *network_insert_identity(Network *net, Layer *at);

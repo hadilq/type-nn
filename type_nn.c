@@ -3,6 +3,7 @@
 #include "type_nn_ln.h"
 #include "type_nn_layer.h"
 #include "type_nn_grow.h"
+#include "type_nn_winner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,7 +118,8 @@ size_t network_param_count(const Network *net)
         for (const AndNode *a = l->and_row; a; a = a->right) {
             for (const OrNode *o = a->or_row; o; o = o->right) {
                 n += 1; /* bias */
-                n += weight_count(o->weight);
+                for (const WeightNode *w = o->weight; w; w = w->right)
+                    if (fabs(w->value) > 1e-12) n++;
             }
             if (net->andpol & AP_LOG)
                 n += 1; /* assembly index a_{i,r} */
@@ -214,6 +216,23 @@ static WeightNode *weight_upsert(WeightNode *head, size_t index,
 static WeightNode *weight_align_size(WeightNode *head, size_t in_size,
                                      double fill, double quant)
 {
+    int sparse = g_bp_net && (g_bp_net->growpol & (TNN_G_PRUNE | TNN_G_TOPK));
+    if (sparse) {
+        /* Keep existing support; drop only indices past in_size. */
+        WeightNode dummy = {0};
+        dummy.right = head;
+        WeightNode *prev = &dummy;
+        while (prev->right) {
+            if (prev->right->right_index >= in_size) {
+                WeightNode *dead = prev->right;
+                prev->right = dead->right;
+                free(dead);
+            } else {
+                prev = prev->right;
+            }
+        }
+        return dummy.right;
+    }
     for (size_t i = 0; i < in_size; i++) {
         WeightNode *cur = head;
         int found = 0;
@@ -343,6 +362,35 @@ static void or_free(OrNode *node)
         free(node);
         node = tmp;
     }
+}
+
+static WeightNode *weight_topk(WeightNode *head, size_t k)
+{
+    if (!head || k == 0) return head;
+    size_t n = weight_count(head);
+    if (n <= k) return head;
+    /* Drop the smallest |w| until n == k. */
+    while (n > k) {
+        WeightNode dummy = {0};
+        dummy.right = head;
+        WeightNode *prev = &dummy;
+        WeightNode *best_prev = &dummy;
+        double best = 1e300;
+        while (prev->right) {
+            double a = fabs(prev->right->value);
+            if (a < best) { best = a; best_prev = prev; }
+            prev = prev->right;
+        }
+        if (!best_prev->right) break;
+        WeightNode *dead = best_prev->right;
+        best_prev->right = dead->right;
+        if (best_prev == &dummy) head = dummy.right;
+        else head = dummy.right;
+        free(dead);
+        n--;
+        head = dummy.right;
+    }
+    return head;
 }
 
 static void or_align_inputs(OrNode *node, size_t in_size, double fill, double quant)
@@ -912,6 +960,17 @@ static int apply_one_recipe(Network *net, const char *n)
         return 1;
     }
     if (tnn_ln_apply(net, n)) return 1;
+    if (!strcmp(n, "winner") || !strcmp(n, "scale-win") || !strcmp(n, "win")) {
+        type_nn_winner_apply(net);
+        return 1;
+    }
+    if (!strcmp(n, "scale-sched") || !strcmp(n, "scale-sched-tight")
+        || !strcmp(n, "scale-sched-wide")) {
+        tnn_ln_apply(net, "ln-v2");
+        tnn_grow_apply(net, n);
+        tnn_layer_apply(net, "Lsched");
+        return 1;
+    }
     if (tnn_grow_apply(net, n)) {
         if (net->growpol & TNN_G_REFUSE)
             tnn_layer_apply(net, "Ljac");
@@ -920,7 +979,10 @@ static int apply_one_recipe(Network *net, const char *n)
     if (tnn_layer_apply(net, n)) return 1;
     unsigned p = 0;
     if (!strcmp(n, "orcool")) p = AP_ORCOOL;
-    else if (!strcmp(n, "budget")) p = AP_BUDGET;
+    else if (!strcmp(n, "budget") || !strcmp(n, "slim-budget")) {
+        net->andpol |= AP_BUDGET;
+        return 1;
+    }
     else if (!strcmp(n, "stuck")) p = AP_STUCK;
     else if (!strcmp(n, "timescale")) p = AP_TIMES;
     else if (!strcmp(n, "asym")) p = AP_ASYM;
@@ -967,13 +1029,18 @@ void network_set_andpol(Network *net, const char *name)
 
 /* u: 0 at start → 1 at span. cool 48→4, cut 1e-6→0.2 so Ors train
    first (long freeze of dummy And, loose prune) then structure tightens. */
-static double orcool_u(const Network *net)
+double network_progress(const Network *net)
 {
     if (!net || !net->orcool_span) return 0.0;
     double u = (double)net->orcool_step / (double)net->orcool_span;
     if (u < 0.0) return 0.0;
     if (u > 1.0) return 1.0;
     return u;
+}
+
+static double orcool_u(const Network *net)
+{
+    return network_progress(net);
 }
 
 static int orcool_len(const Network *net)
@@ -1212,7 +1279,11 @@ static void layer_forward(Layer *l, const InOutNode *x)
             slot->value = tail_readout(slot->value, tail_tau(l, slot->right_index));
             slot = slot->right;
         }
-    } else if (g_bp_net && (g_bp_net->layerpol & TNN_LP_BORN)) {
+    } else if (g_bp_net && ((g_bp_net->layerpol & TNN_LP_BORN)
+            || ((g_bp_net->layerpol & (TNN_LP_EARLY | TNN_LP_HOLD))
+                && l->in_size >= 4))) {
+        /* XOR (in=2) keeps a raw identity product. UCI files bound
+           the hidden so an early/hold layer cannot explode. */
         InOutNode *slot = l->out;
         while (slot) {
             slot->value = stable_tanh(slot->value);
@@ -1620,7 +1691,9 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
             }
             dprod *= tail_dydz(prod, y, tau);
             if (!isfinite(dprod)) dprod = 0.0;
-        } else if (g_bp_net && (g_bp_net->layerpol & TNN_LP_BORN)) {
+        } else if (g_bp_net && ((g_bp_net->layerpol & TNN_LP_BORN)
+                || ((g_bp_net->layerpol & (TNN_LP_EARLY | TNN_LP_HOLD))
+                    && l->in_size >= 4))) {
             double y = stable_tanh(prod);
             dprod *= (1.0 - y * y);
             if (!isfinite(dprod)) dprod = 0.0;
@@ -1738,7 +1811,23 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
         while (a) {
             OrNode *o = a->or_row;
             while (o) {
-                o->weight = weight_prune(o->weight, o->quantization * 10.0, 1);
+                {
+                    double th = o->quantization * 10.0;
+                    if (g_bp_net && (g_bp_net->growpol & TNN_G_PRUNE))
+                        th = TNN_G_PRUNE_T;
+                    if (g_bp_net && (g_bp_net->growpol & TNN_G_SCHED)) {
+                        double u = network_progress(g_bp_net);
+                        double cut = g_bp_net->sched_cut > 0 ? g_bp_net->sched_cut : 0.60;
+                        if (u >= cut) {
+                            double v = (u - cut) / (1.0 - cut + 1e-12);
+                            th = 0.015 + 0.05 * v;
+                        }
+                    }
+                    o->weight = weight_prune(o->weight, th, 1);
+                    if (g_bp_net && (g_bp_net->growpol & TNN_G_TOPK)
+                        && !or_is_ones(o))
+                        o->weight = weight_topk(o->weight, TNN_G_TOPK_N);
+                }
                 o = o->right;
             }
             a = a->right;
@@ -1768,11 +1857,16 @@ void network_backward(Network *net, const InOutNode *dloss)
     Layer *l = net->tail;
     while (l) {
         /* Depth probes: hidden is a fixed-width feature map, like
-           c-mlp. Or/And spawn stays on the tail. */
+           c-mlp. Or/And spawn stays on the tail. Early/hold leave
+           identity slowly (0.25× lr) so XOR can keep the product. */
         int dyn = net->dynamic;
-        if (l->next && (net->layerpol & (TNN_LP_EARLY | TNN_LP_HOLD | TNN_LP_BORN)))
+        double lr = net->lr;
+        if (l->next && (net->layerpol & (TNN_LP_EARLY | TNN_LP_HOLD | TNN_LP_BORN | TNN_LP_SCHED)))
             dyn = 0;
-        layer_backward(l, din, net->lr, dyn, net->max_or,
+        if (l->next && (net->layerpol & (TNN_LP_EARLY | TNN_LP_HOLD))
+            && !(net->layerpol & TNN_LP_BORN))
+            lr *= 0.25;
+        layer_backward(l, din, lr, dyn, net->max_or,
                        &net->or_add, &net->or_drop, &net->and_add, &net->and_drop);
         din = l->din;
 
@@ -1821,6 +1915,8 @@ void network_train(Network *net,
     if (tnn_layer_on(net) && (net->layerpol & TNN_LP_EARLY)
         && !(net->layerpol & TNN_LP_BORN))
         tnn_layer_birth(net);
+    if (net->layerpol & TNN_LP_WIN)
+        type_nn_winner_seed(net);
 
     /* next: Or cap tracks input arity. Wide files get more linear
        factors; iris (d=4) stays at 8. Scale recipes ignore max_or. */

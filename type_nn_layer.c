@@ -50,6 +50,13 @@ int tnn_layer_apply(Network *net, const char *name)
     else if (!strcmp(name, "Lborn") || !strcmp(name, "depth-born")
           || !strcmp(name, "layer-born"))
         p = TNN_LP_BORN | TNN_LP_EARLY | TNN_LP_HOLD | TNN_LP_WIDE;
+    else if (!strcmp(name, "slim-narrow") || !strcmp(name, "Snarrow")) {
+        net->layerpol |= TNN_LP_NARROW;
+        net->layer_probe = 1;
+        return 1;
+    } else if (!strcmp(name, "Lsched") || !strcmp(name, "depth-sched")
+          || !strcmp(name, "layer-sched"))
+        p = TNN_LP_SCHED | TNN_LP_RESID | TNN_LP_DROP;
     else
         return 0;
 
@@ -170,6 +177,11 @@ static size_t hidden_wanted_out(const Network *net, const Layer *at)
     /* Born (random hidden): match c-mlp width. Early identity insert
        stays square so the map does not jump at step 0. */
     if (net->layerpol & TNN_LP_BORN) {
+        if (net->layerpol & TNN_LP_WIN) {
+            size_t h = 4;
+            if (h < out) h = out;
+            return h;
+        }
         size_t h = (in <= 4) ? 8 : 16;
         if (h < out) h = out;
         if (net->layerpol & TNN_LP_WIDE) {
@@ -239,6 +251,12 @@ static int drop_identity_hiddens(Network *net, int keep_one)
 
     if ((p & TNN_LP_HOLD) && schedule_u(net) < TNN_LP_HOLD_U)
         return 0;
+    if (p & TNN_LP_SCHED) {
+        double cut = net->sched_cut > 0 ? net->sched_cut : 0.60;
+        if (schedule_u(net) < cut)
+            return 0;
+        must_keep_depth2 = 0; /* late: identity hidden may go */
+    }
 
     while (l && l != net->tail) {
         Layer *next = l->next;
@@ -290,6 +308,15 @@ static int should_insert(const Network *net)
     if (p & TNN_LP_DUMMY)
         return 1;
 
+    if (p & TNN_LP_SCHED) {
+        double grow = net->sched_grow > 0 ? net->sched_grow : 0.40;
+        if (schedule_u(net) >= grow) return 0;
+        if (net->depth != 1) return 0;
+        if (!residual_large(net) || !net->tail) return 0;
+        if (!tnn_layer_at_cap(net->tail, net->max_or)) return 0;
+        if (!weights_stuck(net)) return 0;
+        return 1;
+    }
     /* Early depth: put a hidden in as soon as the first residual is
        non-trivial. Do not wait for Or/And lists to fill. */
     if ((p & TNN_LP_EARLY) && net->depth == 1)

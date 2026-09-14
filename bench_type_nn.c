@@ -39,6 +39,9 @@ static double time_net_infer(Network *net, double **X, size_t n, size_t in,
     double dt = wall_s() - t0;
     if (sink < -1e300) done++;
     free(pred);
+    if (done < 1) done = 1;
+    /* One clock tick is ~1ns; never report a zero interval. */
+    if (dt < 1e-9) dt = 1e-9;
     if (infer_n) *infer_n = done;
     return dt;
 }
@@ -169,7 +172,7 @@ static void emit(const char *task, double train_s, double infer_s,
     double us_per = infer_n ? (infer_s * 1e6 / (double)infer_n) : 0.0;
     printf(
         "{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
-        "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.4f,"
+        "\"infer_s\":%.9f,\"infer_n\":%zu,\"us_per_infer\":%.6f,"
         "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
         "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
         "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
@@ -213,13 +216,27 @@ static void bench_xor(void)
     size_t infer_n = 0;
     double infer_s = time_net_infer(net, X, 4, 2, 1, 20000, &infer_n);
 
-    emit("xor", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
-         network_param_count(net), network_nbytes(net),
-         mse(net, X, Y, 4, 2, 1), network_depth(net), 4, -1.0, dyn_scale, dyn_depth, dyn_params,
-         (long)net->layer_add, (long)net->layer_drop,
-         (long)net->or_add, (long)net->or_drop,
-         (long)net->and_add, (long)net->and_drop,
-         mse(net, X, Y, 4, 2, 1), -1.0);
+    /* XOR is the full 4-point Boolean. No 70/30 cut exists, so
+       hold_acc == acc: threshold 0.5 on the four targets. */
+    {
+        double xor_mse = mse(net, X, Y, 4, 2, 1);
+        double xor_acc = 0.0;
+        double pred;
+        for (int i = 0; i < 4; i++) {
+            network_predict(net, X[i], 2, &pred, 1);
+            int got = pred >= 0.5;
+            int want = Y[i][0] >= 0.5;
+            if (got == want) xor_acc += 1.0;
+        }
+        xor_acc *= 0.25;
+        emit("xor", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
+             network_param_count(net), network_nbytes(net),
+             xor_mse, network_depth(net), 4, xor_acc, dyn_scale, dyn_depth, dyn_params,
+             (long)net->layer_add, (long)net->layer_drop,
+             (long)net->or_add, (long)net->or_drop,
+             (long)net->and_add, (long)net->and_drop,
+             xor_mse, xor_acc);
+    }
     network_free(net);
 }
 

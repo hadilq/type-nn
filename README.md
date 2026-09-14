@@ -31,5 +31,7 @@ xorshift32 Fisher-Yates, seed 34972, 70/30. Same cut for every impl.
     make test
     make bench
 
-`us/infer` is mean microseconds per `predict` / `forward`. The bench
-keeps calling until 50 ms of wall time so the column cannot print 0.
+`us/infer` is mean microseconds per `predict` / `forward` over at
+least 200 ms of wall time, printed to 6 decimals, floored at 1 ns so
+the column cannot print 0. diabetes has no `hold_acc` (regression).
+XOR `hold_acc` is threshold accuracy on all 4 points.

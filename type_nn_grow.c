@@ -51,13 +51,51 @@ int tnn_grow_apply(Network *net, const char *name)
     else if (!strcmp(name, "scale-layer") || !strcmp(name, "Glayer"))
         p = TNN_G_OR_ENERGY | TNN_G_AND_ENERGY | TNN_G_OR_JAC | TNN_G_AND_JAC
           | TNN_G_REFUSE;
-    else
+    else if (!strcmp(name, "slim-cap")) {
+        net->growpol |= TNN_G_CAP;
+        net->max_or = TNN_G_CAP_OR;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "slim-prune")) {
+        net->growpol |= TNN_G_PRUNE;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "slim-k") || !strcmp(name, "slim-topk")) {
+        net->growpol |= TNN_G_TOPK;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-sched") || !strcmp(name, "Gsched")) {
+        net->growpol |= TNN_G_SCHED | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.60;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-sched-tight") || !strcmp(name, "Gsched-t")) {
+        net->growpol |= TNN_G_SCHED | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->sched_grow = 0.25;
+        net->sched_cut  = 0.50;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-sched-wide") || !strcmp(name, "Gsched-w")) {
+        net->growpol |= TNN_G_SCHED | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->sched_grow = 0.55;
+        net->sched_cut  = 0.75;
+        g_grow = net;
+        return 1;
+    } else
         return 0;
 
-    net->growpol = p;
+    {
+        unsigned slim = net->growpol & (TNN_G_CAP | TNN_G_PRUNE | TNN_G_TOPK);
+        net->growpol = p | slim;
+    }
     g_grow = net;
-    /* No numeric cap when a scale recipe is on. */
-    if (p)
+    if (net->growpol & TNN_G_CAP)
+        net->max_or = TNN_G_CAP_OR;
+    else if (p)
         net->max_or = (size_t)-1 / 4;
     return 1;
 }
@@ -300,6 +338,23 @@ int tnn_grow_want_or(const AndNode *a, double d_and)
     unsigned p = g_grow->growpol;
     if (has_dummy_or(a)) return 0;
     if (!isfinite(d_and)) return 0;
+    if (p & TNN_G_CAP) {
+        size_t n = 0;
+        const OrNode *o = a->or_row;
+        while (o) { n++; o = o->right; }
+        if (n >= (g_grow->max_or ? g_grow->max_or : TNN_G_CAP_OR))
+            return 0;
+    }
+    if (p & TNN_G_SCHED) {
+        double u = network_progress(g_grow);
+        double grow = g_grow->sched_grow > 0 ? g_grow->sched_grow : 0.40;
+        double cut  = g_grow->sched_cut  > 0 ? g_grow->sched_cut  : 0.60;
+        if (u >= cut) return 0;
+        unsigned g = (u < grow)
+            ? (TNN_G_OR_ENERGY | TNN_G_OR_RESID)
+            : (TNN_G_OR_JAC);
+        return gate_or(g, a, fabs(d_and), d_and);
+    }
     return gate_or(p, a, fabs(d_and), d_and);
 }
 
@@ -314,6 +369,16 @@ int tnn_grow_want_and(const Layer *l, size_t index, double d_z)
         a = a->right;
     }
     if (!isfinite(d_z)) return 0;
+    if (p & TNN_G_SCHED) {
+        double u = network_progress(g_grow);
+        double grow = g_grow->sched_grow > 0 ? g_grow->sched_grow : 0.40;
+        double cut  = g_grow->sched_cut  > 0 ? g_grow->sched_cut  : 0.60;
+        if (u >= cut) return 0;
+        unsigned g = (u < grow)
+            ? (TNN_G_AND_ENERGY | TNN_G_AND_RESID)
+            : (TNN_G_AND_JAC);
+        return gate_and(g, l, index, fabs(d_z), d_z);
+    }
     return gate_and(p, l, index, fabs(d_z), d_z);
 }
 

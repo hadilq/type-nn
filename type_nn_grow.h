@@ -50,6 +50,14 @@
 #define TNN_G_AND_SLACK  16384u
 #define TNN_G_OR_SIGN    32768u
 #define TNN_G_AND_SIGN   65536u
+#define TNN_G_CAP        131072u  /* max_or stays TNN_G_CAP_OR */
+#define TNN_G_PRUNE      262144u  /* drop |w| < TNN_G_PRUNE_T */
+#define TNN_G_TOPK       524288u  /* keep TNN_G_TOPK_N largest |w| */
+#define TNN_G_SCHED      1048576u /* early grow / late cut from u */
+
+#define TNN_G_PRUNE_T  0.05
+#define TNN_G_TOPK_N   3
+#define TNN_G_CAP_OR   2
 
 #define TNN_G_T      0.30
 #define TNN_G_K      2.0

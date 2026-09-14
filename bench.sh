@@ -18,7 +18,9 @@ fi
 
 MODELS="type_nn_scale_energy.c type_nn_scale_jac.c type_nn_scale_mix.c \
         type_nn_depth_early.c type_nn_depth_hold.c type_nn_depth_born.c \
-        type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c"
+        type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c \
+        type_nn_scale_jac_early.c type_nn_scale_jac_hold.c type_nn_scale_mix_hold.c \
+        type_nn_slim_cap.c type_nn_slim_prune.c type_nn_slim_k.c type_nn_winner.c type_nn_scale_sched.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o /tmp/bench_type_nn type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
@@ -28,10 +30,16 @@ $CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c type_nn_alt.c type_nn_cmlp
 echo "== type-nn scale + depth  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 : > /tmp/type_nn_bench.jsonl
 # Three scaling probes (energy, jac, mix) and the Or/And/Depth combos.
-for mode in scale-energy scale-jac scale-mix \
+for mode in winner scale-sched scale-sched-tight scale-sched-wide scale-energy scale-jac scale-mix \
             depth-early depth-hold depth-born \
-            scale-mix+depth-born scale-jac+depth-born \
-            scale-ej+depth-born; do
+            scale-mix+depth-hold scale-jac+depth-early \
+            scale-jac+slim-cap scale-mix+slim-cap \
+            scale-jac+slim-prune scale-mix+slim-prune \
+            scale-jac+slim-k scale-mix+slim-k \
+            scale-jac+slim-budget scale-mix+slim-budget \
+            scale-jac+slim-cap+slim-budget \
+            scale-mix+slim-cap+slim-k+slim-prune \
+            scale-mix+depth-hold+slim-narrow; do
   echo "== type-nn-$mode =="
   /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
 done
@@ -58,8 +66,8 @@ for r in rows:
     uniq[(r.get("impl"), r.get("task"))] = r
 rows = list(uniq.values())
 
-hdr = ("task         impl                         hold_acc     acc  params   nbytes  us/infer   train_s"
-       "  or+ or- and+ and-  L+  L-  hold_mse      mse")
+hdr = ("task         impl                         hold_mse  params   train_s      mse  hold_acc     acc   nbytes    us/infer"
+       "  or+ or- and+ and-  L+  L-")
 bar = "-" * len(hdr)
 lines = []
 lines.append("type-nn fair hold-out board")
@@ -72,7 +80,10 @@ lines.append("c-mlp is the only non-type-nn row (Linear-ReLU-Linear baseline).")
 lines.append("or+/or- = dummy Or (×1) promoted / collapsed.")
 lines.append("and+/and- = dummy And (product ≡ 1) promoted / collapsed.")
 lines.append("L+/L- = identity layer insert / drop.")
-lines.append("Sorted by (hold_acc desc, acc desc, params, nbytes, us/infer, train_s).")
+lines.append("us/infer = mean microseconds per forward over >=200 ms wall (never 0).")
+lines.append("hold_acc is n/a on diabetes (regression) only. XOR prints threshold acc")
+lines.append("on all 4 points (no 70/30 cut exists).")
+lines.append("Sorted by (hold_mse, params, train_s, mse, hold_acc asc, acc asc).")
 lines.append("")
 lines.append(hdr)
 lines.append(bar)
@@ -86,13 +97,26 @@ def acc_key(v):
     return float(v)
 for task in order:
     block = by.get(task, [])
+    def mse_key(v):
+        if v is None:
+            return 1e300
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return 1e300
+        import math
+        return x if math.isfinite(x) else 1e300
+    def acc_asc(v):
+        if v is None or v < 0:
+            return 1e300
+        return float(v)
     block.sort(key=lambda r: (
-        -acc_key(r.get("hold_acc", r.get("acc", -1))),
-        -acc_key(r.get("acc", -1)),
+        mse_key(r.get("hold_mse", r.get("mse"))),
         r.get("params", 1 << 30),
-        r.get("nbytes", 1 << 30),
-        r.get("us_per_infer", 1e300),
         r.get("train_s", 1e300),
+        mse_key(r.get("mse")),
+        acc_asc(r.get("hold_acc", r.get("acc"))),
+        acc_asc(r.get("acc")),
     ))
     for r in block:
         acc = r.get("acc", -1)
@@ -113,13 +137,24 @@ for task in order:
         impl = r['impl']
         if len(impl) > 28:
             impl = impl[:28]
+        us = r.get('us_per_infer')
+        if us is None:
+            inf_s = r.get('infer_s') or 0.0
+            inf_n = r.get('infer_n') or 0
+            us = (inf_s * 1e6 / inf_n) if inf_n else 0.0
+        try:
+            us = float(us)
+        except (TypeError, ValueError):
+            us = 0.0
+        if us <= 0.0:
+            us = 1e-6
         lines.append(
-            f"{r['task']:<12} {impl:<28} {ha_s} {acc_s} {r['params']:7d} {r['nbytes']:7d} "
-            f"{r.get('us_per_infer', 0):8.4f} {r.get('train_s', 0):8.4f} "
+            f"{r['task']:<12} {impl:<28} {fnum(hm)} {r['params']:7d} "
+            f"{r.get('train_s', 0):8.4f} {fnum(r.get('mse'))} {ha_s} {acc_s} "
+            f"{r['nbytes']:7d} {us:10.6f} "
             f"{int(r.get('or_add', 0)):4d} {int(r.get('or_drop', 0)):3d} "
             f"{int(r.get('and_add', 0)):4d} {int(r.get('and_drop', 0)):4d} "
-            f"{int(r.get('layer_add', 0)):3d} {int(r.get('layer_drop', 0)):3d} "
-            f"{fnum(hm)} {fnum(r.get('mse'))}")
+            f"{int(r.get('layer_add', 0)):3d} {int(r.get('layer_drop', 0)):3d}")
     if block:
         lines.append("")
 text = "\n".join(lines) + "\n"

@@ -20,7 +20,7 @@
 #include <time.h>
 #include <stddef.h>
 
-#define BENCH_INFER_MIN_S 0.05
+#define BENCH_INFER_MIN_S 0.20
 
 static inline double bench_wall_s(void)
 {

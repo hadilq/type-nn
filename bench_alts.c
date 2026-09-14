@@ -32,6 +32,8 @@ static double time_alt_infer(AltNet *a, double **X, size_t n,
     double dt = wall_s() - t0;
     if (sink < -1e300) done++;
     free(pred);
+    if (done < 1) done = 1;
+    if (dt < 1e-9) dt = 1e-9;
     if (infer_n) *infer_n = done;
     return dt;
 }
@@ -63,7 +65,7 @@ static void emit(const char *impl, const char *task,
 {
     double us = infer_n ? infer_s * 1e6 / (double)infer_n : 0.0;
     printf("{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
-           "\"infer_s\":%.6f,\"infer_n\":%zu,\"us_per_infer\":%.4f,"
+           "\"infer_s\":%.9f,\"infer_n\":%zu,\"us_per_infer\":%.6f,"
            "\"rss_kb\":%ld,\"hwm_kb\":%ld,\"params\":%zu,\"nbytes\":%zu,"
            "\"mse\":%.8f,\"depth\":%zu,\"n\":%zu,\"acc\":%.6f,"
            "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
@@ -161,6 +163,18 @@ static void run_xy(const char *task, AltNet *a, double **X, double **Y,
     long aa = a->and_add ? (long)a->and_add(a->ctx) : 0;
     long ad = a->and_drop ? (long)a->and_drop(a->ctx) : 0;
     double m = mse_of(a, X, Y, n);
+    if (acc < 0.0 && n == 4 && a->out == 1) {
+        /* XOR: threshold accuracy on the four points. */
+        acc = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            double y = 0.0;
+            a->forward(a->ctx, X[i], &y);
+            int got = y >= 0.5;
+            int want = Y[i][0] >= 0.5;
+            if (got == want) acc += 1.0;
+        }
+        acc *= 0.25;
+    }
     emit(a->impl, task, train_s, infer_s, infer_n,
          a->param_count(a->ctx), a->nbytes(a->ctx),
          m, n, acc, depth, dyn_scale, dyn_depth, dyn_params,

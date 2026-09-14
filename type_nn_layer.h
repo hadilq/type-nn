@@ -42,6 +42,8 @@
 #define TNN_LP_EARLY   2048u   /* insert a hidden as soon as training starts */
 #define TNN_LP_HOLD    4096u   /* refuse drop until late in the schedule */
 #define TNN_LP_BORN    8192u   /* hidden exists before init (random, MLP-like) */
+#define TNN_LP_WIN     16384u  /* winner: 6-wide born hidden */
+#define TNN_LP_SCHED   32768u  /* early insert / late drop from u */
 #define TNN_LP_KEEP_DW  1e-3   /* identity hidden with tinier ||dW|| drops */
 #define TNN_LP_HOLD_DW  1e-5   /* HOLD: only drop a truly frozen identity */
 #define TNN_LP_HOLD_U   0.65   /* HOLD: no drop while step/span < 0.65 */

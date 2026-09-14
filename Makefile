@@ -9,7 +9,9 @@ LN = type_nn_ln.c type_nn_ln.h type_nn_layer.c type_nn_layer.h type_nn_grow.c ty
 MODELS = \
 	type_nn_scale_energy.c type_nn_scale_jac.c type_nn_scale_mix.c \
 	type_nn_depth_early.c type_nn_depth_hold.c type_nn_depth_born.c \
-	type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c
+	type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c \
+	type_nn_scale_jac_early.c type_nn_scale_jac_hold.c type_nn_scale_mix_hold.c \
+	type_nn_slim_cap.c type_nn_slim_prune.c type_nn_slim_k.c type_nn_winner.c type_nn_scale_sched.c
 
 all: type-nn test_type_nn
 

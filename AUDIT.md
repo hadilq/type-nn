@@ -92,3 +92,20 @@ and reaches 0.906 acc without catching 0.943.
 depth-early / depth-hold still print the 0.356 iris floor. Inserting
 an identity product in front of a specialized tail is not the same
 object as c-mlp's random ReLU hidden. depth-born is.
+
+
+## Why is hold_acc sometimes n/a?
+
+Two different reasons. They are not a scoring bug.
+
+1. **diabetes** is a real-valued target (disease progression). There
+   is no class label, so argmax accuracy is undefined. Compare
+   `hold_mse`. The bench sets `Dataset.classification = 0` and prints
+   `hold_acc = -1` → `n/a`.
+2. **XOR used to print n/a** because the bench trained on all four
+   points and skipped the accuracy path (`acc = -1`). There is no
+   70/30 cut on four rows. The bench now reports threshold-0.5
+   accuracy on those four points, and `hold_acc == acc`.
+
+iris / wine / wdbc / ionosphere are classification and always have
+both numbers.
