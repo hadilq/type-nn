@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run type-nn, alternate layouts, and (if available) PyTorch benches.
+# Run the type-nn scale/depth board and the c-mlp baseline.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -16,38 +16,33 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-ALTS="type_nn_stack.c type_nn_win.c type_nn_cmlp.c"
+MODELS="type_nn_scale_energy.c type_nn_scale_jac.c type_nn_scale_mix.c \
+        type_nn_depth_early.c type_nn_depth_hold.c type_nn_depth_born.c \
+        type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c"
 
 echo "== building bench_type_nn + bench_alts =="
-$CC $CFLAGS -o /tmp/bench_type_nn type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c bench_type_nn.c dataset.c -lm
-$CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c $ALTS -lm
+$CC $CFLAGS -o /tmp/bench_type_nn type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
+    bench_type_nn.c dataset.c $MODELS -lm
+$CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c type_nn_alt.c type_nn_cmlp.c -lm
 
-echo "== type-nn (Or/And probes, no layer probe)  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
-/tmp/bench_type_nn "$TASK" | tee /tmp/type_nn_bench.jsonl
-# Iteration 5: no max_or / max_and. Width and depth from BP statistics.
-for mode in ln-v2w ln-adam ln-v2w+adam \
-            ln-v2w+scale-mix ln-v2w+scale-mix+adam \
-            ln-v2w+scale-energy ln-v2w+scale-energy+adam \
-            scale-keep scale-mix; do
+echo "== type-nn scale + depth  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
+: > /tmp/type_nn_bench.jsonl
+# Three scaling probes (energy, jac, mix) and the Or/And/Depth combos.
+for mode in scale-energy scale-jac scale-mix \
+            depth-early depth-hold depth-born \
+            scale-mix+depth-born scale-jac+depth-born \
+            scale-ej+depth-born; do
   echo "== type-nn-$mode =="
   /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
 done
 
-echo "== type-nn-win + c-mlp  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
-/tmp/bench_alts "$TASK" | tee /tmp/alt_bench.jsonl
-
-: > /tmp/torch_bench.jsonl
-if python3 -c "import torch" >/dev/null 2>&1; then
-    echo "== pytorch (CPU, 1 thread) =="
-    python3 bench_torch.py "$TASK" | tee /tmp/torch_bench.jsonl
-else
-    echo "== pytorch skipped (python3 + torch not installed) =="
-fi
+echo "== c-mlp  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
+/tmp/bench_alts "$TASK" c-mlp | tee /tmp/alt_bench.jsonl
 
 python3 - << 'PY'
 import json, collections, pathlib
 rows = []
-for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_bench.jsonl"):
+for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl"):
     try:
         with open(path) as f:
             for line in f:
@@ -58,13 +53,12 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl", "/tmp/torch_ben
                     rows.append(json.loads(line))
     except FileNotFoundError:
         pass
-# last row for (impl, task) wins — reruns replace earlier attempts
 uniq = {}
 for r in rows:
     uniq[(r.get("impl"), r.get("task"))] = r
 rows = list(uniq.values())
 
-hdr = ("task         impl             hold_acc     acc  params   nbytes  us/infer   train_s"
+hdr = ("task         impl                         hold_acc     acc  params   nbytes  us/infer   train_s"
        "  or+ or- and+ and-  L+  L-  hold_mse      mse")
 bar = "-" * len(hdr)
 lines = []
@@ -72,11 +66,12 @@ lines.append("type-nn fair hold-out board")
 lines.append("===========================")
 lines.append("")
 lines.append("Split: xorshift32 Fisher-Yates, seed 34972, 70/30. Same cut for every impl.")
-lines.append("type-nn = original linked net: Or + And probes, NO layer probe.")
-lines.append("type-nn-* = same And/Or algebra + layer controllers A–I / win.")
+lines.append("Board models: the three scale probes (energy, jac, mix), the Or/And")
+lines.append("spawn they drive, and the depth probes (early / hold / born).")
+lines.append("c-mlp is the only non-type-nn row (Linear-ReLU-Linear baseline).")
 lines.append("or+/or- = dummy Or (×1) promoted / collapsed.")
 lines.append("and+/and- = dummy And (product ≡ 1) promoted / collapsed.")
-lines.append("L+/L- = identity layer insert / drop (always 0 for original type-nn).")
+lines.append("L+/L- = identity layer insert / drop.")
 lines.append("Sorted by (hold_acc desc, acc desc, params, nbytes, us/infer, train_s).")
 lines.append("")
 lines.append(hdr)
@@ -115,8 +110,11 @@ for task in order:
         hm = r.get("hold_mse", r.get("mse", 0))
         ha = r.get("hold_acc", acc)
         ha_s = "   n/a" if ha is None or ha < 0 else f"{ha:6.3f}"
+        impl = r['impl']
+        if len(impl) > 28:
+            impl = impl[:28]
         lines.append(
-            f"{r['task']:<12} {r['impl']:<16} {ha_s} {acc_s} {r['params']:7d} {r['nbytes']:7d} "
+            f"{r['task']:<12} {impl:<28} {ha_s} {acc_s} {r['params']:7d} {r['nbytes']:7d} "
             f"{r.get('us_per_infer', 0):8.4f} {r.get('train_s', 0):8.4f} "
             f"{int(r.get('or_add', 0)):4d} {int(r.get('or_drop', 0)):3d} "
             f"{int(r.get('and_add', 0)):4d} {int(r.get('and_drop', 0)):4d} "

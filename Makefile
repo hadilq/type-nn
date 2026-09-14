@@ -2,14 +2,16 @@ CC      ?= gcc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wformat -I.
 LDFLAGS ?= -lm
 
-.PHONY: all test test-asan test-alts demo bench data clean lean lean-clean
-
-ALTS = type_nn_stack.c type_nn_win.c type_nn_cmlp.c
-
-
-all: type-nn test_type_nn
+.PHONY: all test test-asan demo bench data clean lean lean-clean
 
 LN = type_nn_ln.c type_nn_ln.h type_nn_layer.c type_nn_layer.h type_nn_grow.c type_nn_grow.h
+
+MODELS = \
+	type_nn_scale_energy.c type_nn_scale_jac.c type_nn_scale_mix.c \
+	type_nn_depth_early.c type_nn_depth_hold.c type_nn_depth_born.c \
+	type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c
+
+all: type-nn test_type_nn
 
 type-nn: type_nn.c run.c type_nn.h $(LN)
 	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c run.c $(LDFLAGS)
@@ -17,14 +19,15 @@ type-nn: type_nn.c run.c type_nn.h $(LN)
 test_type_nn: type_nn.c test_type_nn.c type_nn.h $(LN)
 	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c test_type_nn.c $(LDFLAGS)
 
-bench_type_nn: type_nn.c bench_type_nn.c dataset.c type_nn.h dataset.h $(LN)
-	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c bench_type_nn.c dataset.c $(LDFLAGS)
+bench_type_nn: type_nn.c bench_type_nn.c dataset.c type_nn.h dataset.h $(LN) $(MODELS)
+	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
+	    bench_type_nn.c dataset.c $(MODELS) $(LDFLAGS)
 
-bench_alts: bench_alts.c dataset.c dataset.h type_nn_alt.h $(ALTS)
-	$(CC) $(CFLAGS) -o $@ bench_alts.c dataset.c $(ALTS) $(LDFLAGS)
+bench_alts: bench_alts.c dataset.c dataset.h type_nn_alt.h type_nn_alt.c type_nn_cmlp.c type_nn_cmlp.h
+	$(CC) $(CFLAGS) -o $@ bench_alts.c dataset.c type_nn_alt.c type_nn_cmlp.c $(LDFLAGS)
 
-test_alts: test_alts.c type_nn_alt.h $(ALTS)
-	$(CC) $(CFLAGS) -o $@ test_alts.c $(ALTS) $(LDFLAGS)
+test_alts: test_alts.c type_nn_alt.h type_nn_alt.c type_nn_cmlp.c type_nn_cmlp.h
+	$(CC) $(CFLAGS) -o $@ test_alts.c type_nn_alt.c type_nn_cmlp.c $(LDFLAGS)
 
 test: test_type_nn test_alts
 	./test_type_nn
@@ -55,8 +58,6 @@ bench: bench_type_nn bench_alts
 	chmod +x bench.sh
 	./bench.sh
 
-# Machine-checked statements of the propositions in the post. Bare Lean 4,
-# no Mathlib, so this finishes in seconds. `nix develop` puts lake on PATH.
 lean:
 	cd lean && lake build
 

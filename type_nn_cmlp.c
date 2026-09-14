@@ -1,5 +1,5 @@
+#include "type_nn_cmlp.h"
 #include "type_nn_alt.h"
-#include "type_nn_stack.h"
 
 #include <math.h>
 #include <stdlib.h>

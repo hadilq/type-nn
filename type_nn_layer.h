@@ -39,7 +39,12 @@
 #define TNN_LP_CAP     256u    /* tail Or/And lists are full */
 #define TNN_LP_STUCK   512u    /* ||dW|| small vs residual   */
 #define TNN_LP_REFUSE  1024u   /* Or and And dummies refused to leave 1 */
+#define TNN_LP_EARLY   2048u   /* insert a hidden as soon as training starts */
+#define TNN_LP_HOLD    4096u   /* refuse drop until late in the schedule */
+#define TNN_LP_BORN    8192u   /* hidden exists before init (random, MLP-like) */
 #define TNN_LP_KEEP_DW  1e-3   /* identity hidden with tinier ||dW|| drops */
+#define TNN_LP_HOLD_DW  1e-5   /* HOLD: only drop a truly frozen identity */
+#define TNN_LP_HOLD_U   0.65   /* HOLD: no drop while step/span < 0.65 */
 
 #define TNN_LP_GRAD_T    3.0
 #define TNN_LP_RESID_T   1.0
@@ -55,5 +60,7 @@ int      tnn_layer_at_cap(const Layer *l, size_t max_or);
 double   tnn_layer_l1(const InOutNode *n);
 double   tnn_layer_dw_l1(const Layer *l);
 void     tnn_layer_step(Network *net);
+/* Insert the first hidden now (BORN: before init; EARLY: after init). */
+void     tnn_layer_birth(Network *net);
 
 #endif

@@ -1203,11 +1203,19 @@ static void layer_forward(Layer *l, const InOutNode *x)
             slot = slot->right;
         }
     }
-    /* Tail only. Hidden layers stay the raw product (identity insert). */
+    /* Tail: tanh(z/τ) or ln readout. Born hidden: tanh(z) so a random
+       product stays in (-1,1) the way ReLU stays one-sided. Early
+       identity hidden stays the raw product so the map does not jump. */
     if (!l->next) {
         InOutNode *slot = l->out;
         while (slot) {
             slot->value = tail_readout(slot->value, tail_tau(l, slot->right_index));
+            slot = slot->right;
+        }
+    } else if (g_bp_net && (g_bp_net->layerpol & TNN_LP_BORN)) {
+        InOutNode *slot = l->out;
+        while (slot) {
+            slot->value = stable_tanh(slot->value);
             slot = slot->right;
         }
     }
@@ -1612,6 +1620,10 @@ static bool layer_backward(Layer *l, const InOutNode *dloss, double lr,
             }
             dprod *= tail_dydz(prod, y, tau);
             if (!isfinite(dprod)) dprod = 0.0;
+        } else if (g_bp_net && (g_bp_net->layerpol & TNN_LP_BORN)) {
+            double y = stable_tanh(prod);
+            dprod *= (1.0 - y * y);
+            if (!isfinite(dprod)) dprod = 0.0;
         }
         AndNode *t = l->and_row;
         while (t) {
@@ -1755,7 +1767,12 @@ void network_backward(Network *net, const InOutNode *dloss)
     const InOutNode *din = dloss;
     Layer *l = net->tail;
     while (l) {
-        layer_backward(l, din, net->lr, net->dynamic, net->max_or,
+        /* Depth probes: hidden is a fixed-width feature map, like
+           c-mlp. Or/And spawn stays on the tail. */
+        int dyn = net->dynamic;
+        if (l->next && (net->layerpol & (TNN_LP_EARLY | TNN_LP_HOLD | TNN_LP_BORN)))
+            dyn = 0;
+        layer_backward(l, din, net->lr, dyn, net->max_or,
                        &net->or_add, &net->or_drop, &net->and_add, &net->and_drop);
         din = l->din;
 
@@ -1792,11 +1809,18 @@ void network_train(Network *net,
     net->out_size = out;
     InOutNode *dloss = in_out_create(out);
 
-    if ((net->orcool || net->andpol) && net->orcool_span == 0 && epochs && n_samples)
+    if (net->orcool_span == 0 && epochs && n_samples)
         net->orcool_span = (unsigned)(epochs * n_samples);
     tnn_ln_bind(net);
     tnn_grow_bind(net);
     tnn_ln_init_expn(net);
+
+    /* depth-early: identity hidden after random tail init, so the
+       map is still x→y at step 0 and the extra layer can leave 1
+       while the tail keeps the fit. Born layers already exist. */
+    if (tnn_layer_on(net) && (net->layerpol & TNN_LP_EARLY)
+        && !(net->layerpol & TNN_LP_BORN))
+        tnn_layer_birth(net);
 
     /* next: Or cap tracks input arity. Wide files get more linear
        factors; iris (d=4) stays at 8. Scale recipes ignore max_or. */

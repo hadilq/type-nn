@@ -304,22 +304,16 @@ static int env_epochs(int def)
     return v > 0 ? v : def;
 }
 
-extern AltNet type_nn_cmlp_open(size_t, size_t);
-
 int main(int argc, char **argv)
 {
     const char *task = (argc > 1) ? argv[1] : "all";
     const char *only = (argc > 2) ? argv[2] : NULL;
-    for (size_t i = 0; i < type_nn_alt_count() + 1; i++) {
+    for (size_t i = 0; i < type_nn_alt_count(); i++) {
         AltNet (*open)(size_t, size_t);
         const char *name;
-        if (i < type_nn_alt_count()) {
-            name = type_nn_alt_name(i);
-            open = type_nn_alt_opener(i);
-        } else {
-            name = "c-mlp";
-            open = type_nn_cmlp_open;
-        }
+        name = type_nn_alt_name(i);
+        open = type_nn_alt_opener(i);
+        if (!name || !open) continue;
         if (only && strcmp(only, name) != 0) continue;
         if (!strcmp(task, "xor") || !strcmp(task, "all")) bench_xor(open);
         if (!strcmp(task, "quadratic") || !strcmp(task, "all")) bench_quadratic(open);

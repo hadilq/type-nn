@@ -41,14 +41,25 @@ int tnn_layer_apply(Network *net, const char *name)
         p = TNN_LP_REFUSE | TNN_LP_RESID | TNN_LP_DROP;
     else if (!strcmp(name, "Ljac") || !strcmp(name, "layer-jac"))
         p = TNN_LP_REFUSE | TNN_LP_STUCK | TNN_LP_RESID | TNN_LP_DROP;
+    else if (!strcmp(name, "Learly") || !strcmp(name, "depth-early")
+          || !strcmp(name, "layer-early"))
+        p = TNN_LP_EARLY | TNN_LP_HOLD;
+    else if (!strcmp(name, "Lhold") || !strcmp(name, "depth-hold")
+          || !strcmp(name, "layer-hold"))
+        p = TNN_LP_HOLD | TNN_LP_RESID | TNN_LP_DROP;
+    else if (!strcmp(name, "Lborn") || !strcmp(name, "depth-born")
+          || !strcmp(name, "layer-born"))
+        p = TNN_LP_BORN | TNN_LP_EARLY | TNN_LP_HOLD | TNN_LP_WIDE;
     else
         return 0;
 
     net->layerpol = p;
     if (p) {
         net->layer_probe = 1;
-        /* Compare insert designs at one hidden. Stacking is later. */
+        /* One hidden, same depth as c-mlp. */
         net->max_depth = 2;
+        if (p & TNN_LP_BORN)
+            tnn_layer_birth(net);
     }
     return 1;
 }
@@ -156,6 +167,19 @@ static size_t hidden_wanted_out(const Network *net, const Layer *at)
 {
     size_t in = at && at->in_size ? at->in_size : net->in_size;
     size_t out = net->tail ? net->tail->out_size : net->out_size;
+    /* Born (random hidden): match c-mlp width. Early identity insert
+       stays square so the map does not jump at step 0. */
+    if (net->layerpol & TNN_LP_BORN) {
+        size_t h = (in <= 4) ? 8 : 16;
+        if (h < out) h = out;
+        if (net->layerpol & TNN_LP_WIDE) {
+            size_t w = in * 2;
+            if (w < h) w = h;
+            if (w > 32) w = 32;
+            return w;
+        }
+        return h;
+    }
     if (net->layerpol & TNN_LP_WIDE) {
         size_t w = in * 2;
         if (w < in + out) w = in + out;
@@ -195,15 +219,35 @@ static int count_identity_hidden(const Network *net)
     return n;
 }
 
+static double schedule_u(const Network *net)
+{
+    if (!net || net->orcool_span == 0) return 1.0;
+    double u = (double)net->orcool_step / (double)net->orcool_span;
+    if (u < 0.0) return 0.0;
+    if (u > 1.0) return 1.0;
+    return u;
+}
+
 static int drop_identity_hiddens(Network *net, int keep_one)
 {
     Layer *l = net->head;
     int kept = 0;
     int dropped = 0;
+    unsigned p = net->layerpol;
+    double dw_cut = (p & TNN_LP_HOLD) ? TNN_LP_HOLD_DW : TNN_LP_KEEP_DW;
+    int must_keep_depth2 = (p & (TNN_LP_EARLY | TNN_LP_BORN | TNN_LP_HOLD)) ? 1 : 0;
+
+    if ((p & TNN_LP_HOLD) && schedule_u(net) < TNN_LP_HOLD_U)
+        return 0;
+
     while (l && l != net->tail) {
         Layer *next = l->next;
         if (tnn_layer_is_identity(l)) {
-            if (tnn_layer_dw_l1(l) > TNN_LP_KEEP_DW) {
+            if (tnn_layer_dw_l1(l) > dw_cut) {
+                l = next;
+                continue;
+            }
+            if (must_keep_depth2 && net->depth <= 2) {
                 l = next;
                 continue;
             }
@@ -244,6 +288,13 @@ static int should_insert(const Network *net)
     if (count_identity_hidden(net) > 0) return 0;
 
     if (p & TNN_LP_DUMMY)
+        return 1;
+
+    /* Early depth: put a hidden in as soon as the first residual is
+       non-trivial. Do not wait for Or/And lists to fill. */
+    if ((p & TNN_LP_EARLY) && net->depth == 1)
+        return 1;
+    if ((p & TNN_LP_HOLD) && net->depth == 1 && residual_large(net))
         return 1;
 
     if (p & TNN_LP_REFUSE) {
@@ -289,6 +340,14 @@ static int should_insert(const Network *net)
     return 0;
 }
 
+void tnn_layer_birth(Network *net)
+{
+    if (!net || !net->layerpol) return;
+    if (!(net->layerpol & (TNN_LP_EARLY | TNN_LP_BORN))) return;
+    if (net->depth != 1 || !net->tail) return;
+    insert_hidden(net, net->tail);
+}
+
 void tnn_layer_step(Network *net)
 {
     if (!net || !net->layerpol) return;
@@ -298,6 +357,8 @@ void tnn_layer_step(Network *net)
     int dropped = 0;
     if (net->layerpol & TNN_LP_DROP)
         dropped = drop_identity_hiddens(net, (net->layerpol & TNN_LP_DUMMY) ? 1 : 0);
+    else if (net->layerpol & TNN_LP_HOLD)
+        dropped = drop_identity_hiddens(net, 1);
 
     if (!dropped && should_insert(net))
         insert_hidden(net, net->tail);

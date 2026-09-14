@@ -186,7 +186,22 @@ Never stack a second identity: the live hidden has to leave id first.
     Lfull     residual large AND lists full
     Lstuck    residual large AND ||dW|| small
 
-Combine: `ln-v2w+Lcap`. Depth capped at 2 this round. One structural
-edit per backward (drop XOR insert).
+Combine: `ln-v2w+Lcap`. Legacy gates stay at max_depth 2.
 
-`make bench` rewrites BOARD.txt from the table it prints.
+Iteration 6 — early depth, keep the layer:
+
+    depth-early / Learly   identity hidden at the first train step,
+                           square, drop blocked until u≥0.65, never
+                           drop back to depth 1
+    depth-hold  / Lhold    insert on a large residual (no Or/And cap
+                           wait); same late drop rule
+    depth-born  / Lborn    hidden exists before init_weights (random,
+                           width 8/16 like c-mlp) and is kept
+
+Combine with a scale probe: `scale-mix+depth-early`,
+`scale-energy+depth-hold`, `scale-ej+depth-born`.
+
+`make bench` rewrites BOARD.txt from the table it prints. The live
+board is only those scale + depth models plus c-mlp. A–I / win /
+torch rows were removed with their code. See AUDIT.md.
+
