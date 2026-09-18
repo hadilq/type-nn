@@ -40,6 +40,7 @@ typedef struct OrNode {
     size_t right_index;
     int    cool_left;          /* samples this Or still claims as “busy” */
     double cut;                /* tail snap after BP (annealed in orcool) */
+    double signal;             /* EMA of inference |Or|·|siblings| */
     struct OrNode *right;
 } OrNode;
 
@@ -57,6 +58,7 @@ typedef struct AndNode {
     struct OrNode *or_row;
     size_t right_index;
     int probe_cool;
+    double signal;             /* EMA of inference |A|^a · |grad| */
     struct AndNode *right;
 } AndNode;
 
@@ -117,12 +119,20 @@ typedef struct {
     unsigned lnpol;            /* type-nn-ln recipe bits; see type_nn_ln.h */
     unsigned layerpol;         /* hidden-layer insert/drop; type_nn_layer.h */
     unsigned growpol;          /* Or/And spawn gates; type_nn_grow.h */
-    double   last_dloss_l1;    /* ||y-t||_1 of the sample just backwarded */
+    double   last_dloss_l1;    /* ||y-t||_1 of the sample just backwarded (raw) */
+    double   last_dloss_rms;   /* RMS of y−t, scale-free structure signal */
+    double   ema_rms;          /* EMA of last_dloss_rms; shapes the clock */
+    double   grad_scale;       /* 1/out: mean-MSE ∂L/∂y vs c-mlp */
+    int      ask_depth;        /* grow asked for a layer instead of more degree */
     unsigned long adam_t;      /* Adam step index (1-based while training) */
     double   adam_b1p, adam_b2p;
     double   sched_grow;     /* u < grow: scale Or/And/Layer up */
     double   sched_cut;      /* u > cut: refuse spawn, prune */
+    size_t   init_depth;     /* layers at birth: floor(1+ln(n m)) */
 } Network;
+
+/* Per-sample Adam on type-nn and c-mlp: printed task lr × this. */
+#define TNN_ADAM_LR_SCALE 0.1
 
 #define TNN_AP_BUDGET 2u
 #define TNN_AP_STUCK  4u
@@ -155,6 +165,9 @@ double   network_progress(const Network *net); /* u in [0,1] */
 
 /* Insert an identity hidden layer in front of `at` (NULL = before tail). */
 Layer   *network_insert_identity(Network *net, Layer *at);
+/* Insert a typed-product hidden with the same constructor as the tail
+   (DEFAULT_OR_FACTORS affines per head, same random init). Not identity. */
+Layer   *network_insert_similar(Network *net, Layer *at);
 /* Remove a hidden layer. Returns 0 on success, -1 if refused. */
 int      network_remove_layer(Network *net, Layer *node);
 

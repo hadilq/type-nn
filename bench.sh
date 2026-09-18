@@ -16,11 +16,7 @@ if [ -z "${TYPE_NN_DATA:-}" ]; then
   fi
 fi
 
-MODELS="type_nn_scale_energy.c type_nn_scale_jac.c type_nn_scale_mix.c \
-        type_nn_depth_early.c type_nn_depth_hold.c type_nn_depth_born.c \
-        type_nn_scale_mix_early.c type_nn_scale_energy_hold.c type_nn_scale_ej_born.c \
-        type_nn_scale_jac_early.c type_nn_scale_jac_hold.c type_nn_scale_mix_hold.c \
-        type_nn_slim_cap.c type_nn_slim_prune.c type_nn_slim_k.c type_nn_winner.c type_nn_scale_sched.c"
+MODELS="type_nn_model.c"
 
 echo "== building bench_type_nn + bench_alts =="
 $CC $CFLAGS -o /tmp/bench_type_nn type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
@@ -29,18 +25,9 @@ $CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c type_nn_alt.c type_nn_cmlp
 
 echo "== type-nn scale + depth  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 : > /tmp/type_nn_bench.jsonl
-# Three scaling probes (energy, jac, mix) and the Or/And/Depth combos.
-for mode in winner scale-sched scale-sched-tight scale-sched-wide scale-energy scale-jac scale-mix \
-            depth-early depth-hold depth-born \
-            scale-mix+depth-hold scale-jac+depth-early \
-            scale-jac+slim-cap scale-mix+slim-cap \
-            scale-jac+slim-prune scale-mix+slim-prune \
-            scale-jac+slim-k scale-mix+slim-k \
-            scale-jac+slim-budget scale-mix+slim-budget \
-            scale-jac+slim-cap+slim-budget \
-            scale-mix+slim-cap+slim-k+slim-prune \
-            scale-mix+depth-hold+slim-narrow; do
-  echo "== type-nn-$mode =="
+# Faithful board: type-nn (three-axis scale) vs c-mlp.
+for mode in type-nn; do
+  echo "== $mode =="
   /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
 done
 
@@ -67,19 +54,22 @@ for r in rows:
 rows = list(uniq.values())
 
 hdr = ("task         impl                         hold_mse  params   train_s      mse  hold_acc     acc   nbytes    us/infer"
-       "  or+ or- and+ and-  L+  L-")
+       "  or+ or- and+ and-  L0 L+ L-")
 bar = "-" * len(hdr)
 lines = []
 lines.append("type-nn fair hold-out board")
 lines.append("===========================")
 lines.append("")
 lines.append("Split: xorshift32 Fisher-Yates, seed 34972, 70/30. Same cut for every impl.")
-lines.append("Board models: the three scale probes (energy, jac, mix), the Or/And")
-lines.append("spawn they drive, and the depth probes (early / hold / born).")
-lines.append("c-mlp is the only non-type-nn row (Linear-ReLU-Linear baseline).")
+lines.append("Board models: type-nn and c-mlp.")
+lines.append("type-nn is the three-axis recipe (Or width, And dummy-Or, Depth).")
+lines.append("c-mlp is Linear-ReLU-Linear + ln tail.")
+lines.append("L0 = layers at birth. type-nn: floor(1+ln(n m)) product layers.")
+lines.append("c-mlp L0 = 2 (Linear-ReLU-Linear).")
+lines.append("  xor 1 | iris 3 | diabetes 3 | wine 4 | wdbc 4 | ionosphere 4")
 lines.append("or+/or- = dummy Or (×1) promoted / collapsed.")
 lines.append("and+/and- = dummy And (product ≡ 1) promoted / collapsed.")
-lines.append("L+/L- = identity layer insert / drop.")
+lines.append("L+/L- = train-time layer insert / drop (birth is L0, not L+).")
 lines.append("us/infer = mean microseconds per forward over >=200 ms wall (never 0).")
 lines.append("hold_acc is n/a on diabetes (regression) only. XOR prints threshold acc")
 lines.append("on all 4 points (no 70/30 cut exists).")
@@ -154,6 +144,7 @@ for task in order:
             f"{r['nbytes']:7d} {us:10.6f} "
             f"{int(r.get('or_add', 0)):4d} {int(r.get('or_drop', 0)):3d} "
             f"{int(r.get('and_add', 0)):4d} {int(r.get('and_drop', 0)):4d} "
+            f"{int(r.get('init_layers', 1)):3d} "
             f"{int(r.get('layer_add', 0)):3d} {int(r.get('layer_drop', 0)):3d}")
     if block:
         lines.append("")

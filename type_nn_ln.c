@@ -344,7 +344,7 @@ void tnn_ln_step_tau(Layer *l, size_t index, double g_tau, double lr)
     double eta = lr;
     if (tnn_ln_bit(LN_ALR)) eta *= 0.1;
     if (tnn_ln_bit(LN_ADAM) && g_ln) {
-        eta *= 0.1;
+        eta *= TNN_ADAM_LR_SCALE;
         unsigned long t = g_ln->adam_t ? g_ln->adam_t : 1;
         l->tau_m[index] = LN_ADAM_B1 * l->tau_m[index] + (1.0 - LN_ADAM_B1) * g_tau;
         l->tau_v[index] = LN_ADAM_B2 * l->tau_v[index] + (1.0 - LN_ADAM_B2) * g_tau * g_tau;
@@ -428,6 +428,7 @@ void tnn_ln_step_expn(AndNode *a, double dL_dz, double z, double gate, double lr
     double eta = tnn_ln_lr_a(lr);
     double na;
     if (tnn_ln_bit(LN_ADAM) && g_ln) {
+        eta *= TNN_ADAM_LR_SCALE;
         unsigned long t = g_ln->adam_t ? g_ln->adam_t : 1;
         a->expn_m = LN_ADAM_B1 * a->expn_m + (1.0 - LN_ADAM_B1) * g_a;
         a->expn_v = LN_ADAM_B2 * a->expn_v + (1.0 - LN_ADAM_B2) * g_a * g_a;

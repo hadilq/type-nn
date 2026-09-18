@@ -167,7 +167,7 @@ static void emit(const char *task, double train_s, double infer_s,
                  size_t n_samples, double acc, double dyn_scale, int dyn_depth, long dyn_params,
                  long layer_add, long layer_drop,
                  long or_add, long or_drop, long and_add, long and_drop,
-                 double hold_mse, double hold_acc)
+                 double hold_mse, double hold_acc, size_t init_layers)
 {
     double us_per = infer_n ? (infer_s * 1e6 / (double)infer_n) : 0.0;
     printf(
@@ -178,12 +178,12 @@ static void emit(const char *task, double train_s, double infer_s,
         "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
         "\"layer_add\":%ld,\"layer_drop\":%ld,"
         "\"or_add\":%ld,\"or_drop\":%ld,\"and_add\":%ld,\"and_drop\":%ld,"
-        "\"hold_mse\":%.8f,\"hold_acc\":%.6f}\n",
+        "\"hold_mse\":%.8f,\"hold_acc\":%.6f,\"init_layers\":%zu}\n",
         g_impl, task, train_s, infer_s, infer_n, us_per,
         rss, hwm, params, nbytes, final_mse, depth, n_samples, acc,
         dyn_scale, dyn_depth, dyn_params,
         layer_add, layer_drop, or_add, or_drop, and_add, and_drop,
-        hold_mse, hold_acc);
+        hold_mse, hold_acc, init_layers);
 }
 
 static void bench_xor(void)
@@ -194,7 +194,7 @@ static void bench_xor(void)
     network_set_layer_probe(net, 0);
     network_set_verbose(net, 0);
     network_set_learning_rate(net, 0.08);
-    apply_mode(net, 4, 4000);
+    apply_mode(net, 4, 2000);
     network_init_weights(net);
 
     double Xd[4][2] = {{0,0},{0,1},{1,0},{1,1}};
@@ -206,7 +206,7 @@ static void bench_xor(void)
     net_snap(net, &db, ab, ob);
     size_t p0 = network_param_count(net);
     double t0 = wall_s();
-    network_train(net, X, Y, 4, 400);
+    network_train(net, X, Y, 4, 2000);
     double train_s = wall_s() - t0;
     net_snap(net, &da, aa, oa);
     double dyn_scale = net_dyn_scale(db, ab, ob, da, aa, oa);
@@ -216,27 +216,48 @@ static void bench_xor(void)
     size_t infer_n = 0;
     double infer_s = time_net_infer(net, X, 4, 2, 1, 20000, &infer_n);
 
-    /* XOR is the full 4-point Boolean. No 70/30 cut exists, so
-       hold_acc == acc: threshold 0.5 on the four targets. */
-    {
-        double xor_mse = mse(net, X, Y, 4, 2, 1);
-        double xor_acc = 0.0;
-        double pred;
-        for (int i = 0; i < 4; i++) {
-            network_predict(net, X[i], 2, &pred, 1);
-            int got = pred >= 0.5;
-            int want = Y[i][0] >= 0.5;
-            if (got == want) xor_acc += 1.0;
-        }
-        xor_acc *= 0.25;
-        emit("xor", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
-             network_param_count(net), network_nbytes(net),
-             xor_mse, network_depth(net), 4, xor_acc, dyn_scale, dyn_depth, dyn_params,
-             (long)net->layer_add, (long)net->layer_drop,
-             (long)net->or_add, (long)net->or_drop,
-             (long)net->and_add, (long)net->and_drop,
-             xor_mse, xor_acc);
+    double xor_mse = mse(net, X, Y, 4, 2, 1);
+    double xor_acc = 0.0;
+    double pred;
+    for (int i = 0; i < 4; i++) {
+        network_predict(net, X[i], 2, &pred, 1);
+        int got = pred >= 0.5;
+        int want = Y[i][0] >= 0.5;
+        if (got == want) xor_acc += 1.0;
     }
+    xor_acc *= 0.25;
+
+    /* Leave-one-out hold-out: train on 3 points, score the held point. */
+    double hold_mse = 0.0, hold_acc = 0.0;
+    for (int h = 0; h < 4; h++) {
+        srand(34972u + (unsigned)h * 17u);
+        Network *fold = network_create(2, 1);
+        network_set_dynamic(fold, 1);
+        network_set_layer_probe(fold, 0);
+        network_set_verbose(fold, 0);
+        network_set_learning_rate(fold, 0.08);
+        apply_mode(fold, 3, 2000);
+        network_init_weights(fold);
+        double *Xt[3], *Yt[3];
+        int k = 0;
+        for (int i = 0; i < 4; i++)
+            if (i != h) { Xt[k] = Xd[i]; Yt[k] = Yd[i]; k++; }
+        network_train(fold, Xt, Yt, 3, 2000);
+        network_predict(fold, Xd[h], 2, &pred, 1);
+        double d = pred - Yd[h][0];
+        hold_mse += d * d;
+        if ((pred >= 0.5) == (Yd[h][0] >= 0.5)) hold_acc += 1.0;
+        network_free(fold);
+    }
+    hold_mse *= 0.25;
+    hold_acc *= 0.25;
+    emit("xor", train_s, infer_s, infer_n, rss_kb(), hwm_kb(),
+         network_param_count(net), network_nbytes(net),
+         xor_mse, network_depth(net), 4, xor_acc, dyn_scale, dyn_depth, dyn_params,
+         (long)net->layer_add, (long)net->layer_drop,
+         (long)net->or_add, (long)net->or_drop,
+         (long)net->and_add, (long)net->and_drop,
+         hold_mse, hold_acc, net->init_depth);
     network_free(net);
 }
 
@@ -276,7 +297,7 @@ static void bench_quadratic(void)
          (long)net->layer_add, (long)net->layer_drop,
          (long)net->or_add, (long)net->or_drop,
          (long)net->and_add, (long)net->and_drop,
-         mse(net, X, Y, N, 2, 1), -1.0);
+         mse(net, X, Y, N, 2, 1), -1.0, net->init_depth);
     network_free(net);
     mat_free(X, N);
     mat_free(Y, N);
@@ -321,7 +342,7 @@ static void bench_mlp_scale(void)
          (long)net->layer_add, (long)net->layer_drop,
          (long)net->or_add, (long)net->or_drop,
          (long)net->and_add, (long)net->and_drop,
-         mse(net, X, Y, N, IN, OUT), -1.0);
+         mse(net, X, Y, N, IN, OUT), -1.0, net->init_depth);
     network_free(net);
     mat_free(X, N);
     mat_free(Y, N);
@@ -433,7 +454,7 @@ static int bench_real(const char *task, const char *file,
          (long)net->layer_add, (long)net->layer_drop,
          (long)net->or_add, (long)net->or_drop,
          (long)net->and_add, (long)net->and_drop,
-         te_mse, te_acc);
+         te_mse, te_acc, net->init_depth);
     free(Xtr); free(Ytr); free(perm);
     network_free(net);
     dataset_free(&ds);
@@ -447,7 +468,11 @@ int main(int argc, char **argv)
     if (argc > 2 && argv[2][0]) {
         g_mode = argv[2];
         static char impl[64];
-        snprintf(impl, sizeof(impl), "type-nn-%s", g_mode);
+        if (!strcmp(g_mode, "type-nn") || !strcmp(g_mode, "typenn")
+            || !strcmp(g_mode, "model"))
+            snprintf(impl, sizeof(impl), "type-nn");
+        else
+            snprintf(impl, sizeof(impl), "type-nn-%s", g_mode);
         g_impl = impl;
     }
     if (!strcmp(task, "xor") || !strcmp(task, "all")) bench_xor();

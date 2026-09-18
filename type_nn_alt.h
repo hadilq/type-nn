@@ -44,6 +44,7 @@ struct AltNet {
     size_t (*and_drop)(void *ctx);
 };
 
+#define TNN_ADAM_LR_SCALE 0.1
 #define TNN_SNAP_MAX 8
 typedef struct {
     size_t depth;

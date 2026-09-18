@@ -620,7 +620,8 @@ static void test_train_zero_epochs_and_zero_init_predict(void)
     network_predict(net, Xd[0], 2, y, 1);
     EXPECT(isfinite(y[0]), "predict works with zero-init weights");
     EXPECT(network_param_count(net) > 0, "params exist");
-    EXPECT(network_nbytes(net) > sizeof(Network), "bytes include nodes");
+    EXPECT(network_nbytes(net) == network_param_count(net) * sizeof(double),
+           "nbytes is live params × sizeof(double)");
     network_free(net);
 }
 
@@ -709,16 +710,17 @@ static void test_param_count_tracks_reshape(void)
 {
     section("param_count and nbytes track grow / shrink");
     Network *net = network_create(2, 1);
+    network_init_weights(net);
     size_t p0 = network_param_count(net);
-    size_t b0 = network_nbytes(net);
     EXPECT(p0 == (size_t)(2 * (1 + 2)), "2 ORs × (bias + 2 weights)");
     layer_align_inputs(net->head, 5);
     size_t p1 = network_param_count(net);
-    EXPECT(p1 == (size_t)(2 * (1 + 5)), "weights grew with inputs");
-    EXPECT(network_nbytes(net) > b0, "nbytes grew");
+    EXPECT(p1 >= p0, "align keeps live params");
+    EXPECT(network_nbytes(net) == p1 * sizeof(double),
+           "nbytes tracks live params");
     layer_set_outputs(net->head, 3);
-    EXPECT(network_param_count(net) == (size_t)(3 * 2 * (1 + 5)),
-           "params scale with outputs × ORs × (bias+in)");
+    EXPECT(network_param_count(net) >= p1,
+           "more heads do not lose live params");
     network_free(net);
 }
 
@@ -1295,6 +1297,86 @@ static void test_grow_gates(void)
     network_free(net);
 }
 
+static void test_board_pulse_and_depth(void)
+{
+    section("board recipe: type-nn, init depth, dummy Or/And/Depth");
+    EXPECT(tnn_layer_init_depth(2, 1) == 1, "xor depth floor(1+ln2)=1");
+    EXPECT(tnn_layer_init_depth(4, 3) == 3, "iris depth floor(1+ln12)=3");
+    EXPECT(tnn_layer_init_depth(13, 3) == 4, "wine depth floor(1+ln39)=4");
+    EXPECT(tnn_layer_init_depth(30, 2) == 5, "wdbc depth floor(1+ln60)=5");
+    EXPECT(tnn_layer_init_depth(34, 2) == 5, "iono depth floor(1+ln68)=5");
+    EXPECT(tnn_layer_init_depth(10, 1) == 3, "diabetes depth floor(1+ln10)=3");
+
+    Network *net = network_create(4, 3);
+    network_set_dynamic(net, 1);
+    network_set_andpol(net, "type-nn");
+    EXPECT(tnn_ln_on(), "type-nn is ln-v2");
+    EXPECT(tnn_ln_bit(LN_ADAM), "type-nn uses the same Adam as c-mlp");
+    EXPECT(net->growpol & TNN_G_FREE, "type-nn has no count cap");
+    EXPECT(net->growpol & TNN_G_SIGNAL, "type-nn cuts on inference signal");
+    EXPECT(net->growpol & TNN_G_WIDTH, "type-nn scales incoming width");
+    EXPECT(net->layerpol & TNN_LP_DEPTH, "type-nn uses Ldepth");
+    EXPECT(net->max_or > 1000, "type-nn lifts max_or");
+    EXPECT(net->sched_grow >= 0.25 && net->sched_grow <= 0.45, "type-nn grow window");
+    {
+        double Xd[1][4] = {{0.1, 0.2, 0.3, 0.4}};
+        double Yd[1][3] = {{0.2, 0.3, 0.5}};
+        double *X[1] = {Xd[0]};
+        double *Y[1] = {Yd[0]};
+        network_init_weights(net);
+        network_train(net, X, Y, 1, 0);
+        EXPECT(net->init_depth == 3, "type-nn births floor(1+ln12)=3");
+        EXPECT(network_depth(net) == 3, "stack is 3 product layers");
+        EXPECT(tnn_layer_is_identity(net->head),
+               "depth dummy is an identity hidden at birth");
+        EXPECT(or_count(net->head->and_row->or_row) >= 1,
+               "hidden keeps an Or list");
+    }
+
+    network_set_andpol(net, "type-nn");
+    net->orcool_span = 1000;
+    net->orcool_step = 500; /* mid / cut phase */
+    double loud = tnn_grow_thresh(net, 2.0);
+    double quiet = tnn_grow_thresh(net, 0.0);
+    EXPECT(loud < quiet, "loud inference signal keeps a lower cut");
+    double sat = tnn_grow_thresh(net, 100.0);
+    EXPECT(sat >= loud, "saturated signal is not protected");
+    network_free(net);
+}
+
+
+static void test_type_nn_xor_zero_mse(void)
+{
+    section("type-nn recipe fits XOR to ~0 MSE");
+    srand(34972);
+    Network *net = network_create(2, 1);
+    network_set_dynamic(net, 1);
+    network_set_verbose(net, 0);
+    network_set_learning_rate(net, 0.08);
+    network_set_andpol(net, "type-nn");
+    network_set_orcool_span(net, 4u * 2000u);
+    network_init_weights(net);
+    double Xd[4][2] = {{0,0},{0,1},{1,0},{1,1}};
+    double Yd[4][1] = {{0},{1},{1},{0}};
+    double *X[4], *Y[4];
+    for (int i = 0; i < 4; i++) { X[i] = Xd[i]; Y[i] = Yd[i]; }
+    network_train(net, X, Y, 4, 2000);
+    double pred, mse = 0.0;
+    int acc = 0;
+    for (int i = 0; i < 4; i++) {
+        network_predict(net, Xd[i], 2, &pred, 1);
+        double d = pred - Yd[i][0];
+        mse += d * d;
+        if ((pred >= 0.5) == (Yd[i][0] >= 0.5)) acc++;
+        printf("    [%.0f %.0f] -> %.6f\n", Xd[i][0], Xd[i][1], pred);
+    }
+    mse *= 0.25;
+    printf("  xor mse %.8f acc %d/4\n", mse, acc);
+    EXPECT(mse < 1e-8, "type-nn XOR train MSE is ~0");
+    EXPECT(acc == 4, "type-nn XOR train acc is 1");
+    network_free(net);
+}
+
 int main(void)
 {
     printf("╔══════════════════════════════════════════════╗\n");
@@ -1349,6 +1431,8 @@ int main(void)
     test_layer_policies();
     test_layer_cap_gate();
     test_grow_gates();
+    test_board_pulse_and_depth();
+    test_type_nn_xor_zero_mse();
 
     printf("\n══════════════════════════════════════════════\n");
     printf("  %d passed, %d failed\n", g_pass, g_fail);

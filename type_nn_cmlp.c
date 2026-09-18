@@ -6,15 +6,14 @@
 #include <string.h>
 
 /*
- * c-mlp — same model torch-mlp trains in bench_torch.py, in C.
+ * c-mlp — Linear(in, H) → ReLU → Linear(H, out) → ln tail
  *
- *   Linear(in, H) → ReLU → Linear(H, out)
- *   H = 8 if in <= 4 else 16   (iris 8; wine/wdbc/diabetes/iono 16; xor 8)
- *   full-batch Adam, PyTorch Linear init (U(-1/sqrt(fan_in), +1/sqrt(fan_in)))
- *
- * Lives outside the type-nn-* registry so test_alts does not demand
- * And/Or identity algebra from a ReLU MLP. bench_alts.c runs it as the
- * fair timing/accuracy baseline.
+ *   H = 8 if in <= 4 else 16
+ *   Per-sample Adam, same (β1, β2, ε) and task lr as type-nn. No
+ *   full-batch fudge. Tail is the type-nn readout
+ *       y = sign(z) ln(1 + |z|/τ)
+ *   so MSE lives on the same coordinate. τ_i born at 1, learned.
+ *   Init is still PyTorch Linear U(-1/sqrt(fan_in), +1/sqrt(fan_in)).
  */
 
 #define AD_B1  0.9
@@ -36,7 +35,28 @@ typedef struct {
     unsigned long tstep;
     double  b1p, b2p;
     size_t  in, out, hid;
+    double *tau, *tau_m, *tau_v, *z; /* ln tail, same as type-nn */
 } MLP;
+
+#define CMLP_TAU_MIN 1e-4
+
+static double cmlp_ln_y(double z, double tau)
+{
+    if (tau < CMLP_TAU_MIN) tau = CMLP_TAU_MIN;
+    return copysign(log(1.0 + fabs(z) / tau), z);
+}
+
+static double cmlp_ln_dydz(double z, double tau)
+{
+    if (tau < CMLP_TAU_MIN) tau = CMLP_TAU_MIN;
+    return 1.0 / (tau + fabs(z));
+}
+
+static double cmlp_ln_dydtau(double z, double tau)
+{
+    if (tau < CMLP_TAU_MIN) tau = CMLP_TAU_MIN;
+    return -copysign(1.0, z) * fabs(z) / (tau * (tau + fabs(z)));
+}
 
 static size_t pick_hid(size_t in, size_t out)
 {
@@ -125,6 +145,12 @@ static void net_init(void *c)
     M->tstep = 0;
     M->b1p = M->b2p = 1.0;
     for (size_t i = 0; i < M->depth; i++) dinit(&M->L[i]);
+    for (size_t i = 0; i < M->out; i++) {
+        M->tau[i] = 1.0;
+        M->tau_m[i] = 0.0;
+        M->tau_v[i] = 0.0;
+        M->z[i] = 0.0;
+    }
 }
 
 static void net_fwd(void *c, const double *x, double *y)
@@ -135,20 +161,30 @@ static void net_fwd(void *c, const double *x, double *y)
         dfwd(&M->L[i], cur);
         cur = M->L[i].y;
     }
-    memcpy(y, cur, M->out * sizeof(double));
+    for (size_t k = 0; k < M->out; k++) {
+        M->z[k] = cur[k];
+        y[k] = cmlp_ln_y(cur[k], M->tau[k]);
+    }
 }
 
 static void net_bwd(void *c, const double *x, const double *dy, double lr)
 {
     MLP *M = c;
     (void)x;
-    /* Per-sample steps see ~n more updates than torch's full batch.
-       Scale lr so the C twin stays in the same effective range. */
-    lr *= 0.15;
+    /* Same per-sample Adam as type-nn, including TNN_ADAM_LR_SCALE. */
+    lr *= TNN_ADAM_LR_SCALE;
     M->tstep++;
     M->b1p *= AD_B1;
     M->b2p *= AD_B2;
-    const double *dcur = dy;
+    double *dz = (double *)malloc((M->out ? M->out : 1) * sizeof(double));
+    for (size_t k = 0; k < M->out; k++) {
+        double tau = M->tau[k] < CMLP_TAU_MIN ? CMLP_TAU_MIN : M->tau[k];
+        dz[k] = dy[k] * cmlp_ln_dydz(M->z[k], tau);
+        double gtau = dy[k] * cmlp_ln_dydtau(M->z[k], tau);
+        M->tau[k] -= ad(&M->tau_m[k], &M->tau_v[k], gtau, lr, M->b1p, M->b2p);
+        if (M->tau[k] < CMLP_TAU_MIN) M->tau[k] = CMLP_TAU_MIN;
+    }
+    const double *dcur = dz;
     double *hold = NULL;
     for (size_t i = M->depth; i-- > 0; ) {
         double *dx = (i > 0) ? M->L[i].dx : NULL;
@@ -161,6 +197,7 @@ static void net_bwd(void *c, const double *x, const double *dy, double lr)
         }
     }
     free(hold);
+    free(dz);
 }
 
 static void net_align(void *c, size_t in)
@@ -180,6 +217,16 @@ static void net_out(void *c, size_t o)
     dfree(&M->L[M->depth - 1]);
     dalloc(&M->L[M->depth - 1], M->hid, o, 0);
     dinit(&M->L[M->depth - 1]);
+    M->tau = (double *)realloc(M->tau, (o ? o : 1) * sizeof(double));
+    M->tau_m = (double *)realloc(M->tau_m, (o ? o : 1) * sizeof(double));
+    M->tau_v = (double *)realloc(M->tau_v, (o ? o : 1) * sizeof(double));
+    M->z = (double *)realloc(M->z, (o ? o : 1) * sizeof(double));
+    for (size_t i = 0; i < o; i++) {
+        M->tau[i] = 1.0;
+        M->tau_m[i] = 0.0;
+        M->tau_v[i] = 0.0;
+        M->z[i] = 0.0;
+    }
     M->out = o;
 }
 
@@ -230,7 +277,7 @@ static size_t net_kf(void *c) { (void)c; return 1; }
 static size_t net_params(void *c)
 {
     MLP *M = c;
-    size_t n = 0;
+    size_t n = M->out; /* learned tail τ_i */
     for (size_t i = 0; i < M->depth; i++)
         n += M->L[i].out * (M->L[i].in + 1);
     return n;
@@ -245,6 +292,7 @@ static void net_free(void *c)
 {
     MLP *M = c;
     for (size_t i = 0; i < M->depth; i++) dfree(&M->L[i]);
+    free(M->tau); free(M->tau_m); free(M->tau_v); free(M->z);
     free(M);
 }
 
@@ -291,6 +339,11 @@ AltNet type_nn_cmlp_open(size_t in, size_t out)
     dalloc(&M->L[0], in, M->hid, 1);
     dalloc(&M->L[1], M->hid, out, 0);
     M->depth = 2;
+    M->tau = (double *)calloc(out ? out : 1, sizeof(double));
+    M->tau_m = (double *)calloc(out ? out : 1, sizeof(double));
+    M->tau_v = (double *)calloc(out ? out : 1, sizeof(double));
+    M->z = (double *)calloc(out ? out : 1, sizeof(double));
+    for (size_t i = 0; i < out; i++) M->tau[i] = 1.0;
     AltNet h = {
         .impl = "c-mlp", .ctx = M, .in = in, .out = out,
         .init = net_init, .forward = net_fwd, .backward = net_bwd,

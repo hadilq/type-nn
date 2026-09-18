@@ -30,13 +30,11 @@ void type_nn_alt_train(AltNet *a, double **X, double **Y,
         for (size_t s = 0; s < n; s++) {
             size_t si = ord[s];
             a->forward(a->ctx, X[si], pred);
+            /* Mean-MSE: ∂L/∂y = (y−t)/out. No Huber clip — same
+               residual type-nn back-props after grad_scale. */
             double inv = 1.0 / (double)(a->out ? a->out : 1);
-            for (size_t k = 0; k < a->out; k++) {
-                double e = pred[k] - Y[si][k];
-                if (e > 1.0) e = 1.0;
-                if (e < -1.0) e = -1.0;
-                dy[k] = e * inv;
-            }
+            for (size_t k = 0; k < a->out; k++)
+                dy[k] = (pred[k] - Y[si][k]) * inv;
             a->backward(a->ctx, X[si], dy, lr);
         }
     }

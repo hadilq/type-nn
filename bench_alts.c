@@ -61,7 +61,7 @@ static void emit(const char *impl, const char *task,
                  double dyn_scale, int dyn_depth, long dyn_params,
                  long layer_add, long layer_drop,
                  long or_add, long or_drop, long and_add, long and_drop,
-                 double hold_mse, double hold_acc)
+                 double hold_mse, double hold_acc, size_t init_layers)
 {
     double us = infer_n ? infer_s * 1e6 / (double)infer_n : 0.0;
     printf("{\"impl\":\"%s\",\"task\":\"%s\",\"train_s\":%.6f,"
@@ -71,12 +71,12 @@ static void emit(const char *impl, const char *task,
            "\"dyn_scale\":%.4f,\"dyn_depth\":%d,\"dyn_params\":%ld,"
            "\"layer_add\":%ld,\"layer_drop\":%ld,"
            "\"or_add\":%ld,\"or_drop\":%ld,\"and_add\":%ld,\"and_drop\":%ld,"
-           "\"hold_mse\":%.8f,\"hold_acc\":%.6f}\n",
+           "\"hold_mse\":%.8f,\"hold_acc\":%.6f,\"init_layers\":%zu}\n",
            impl, task, train_s, infer_s, infer_n, us,
            rss_kb(), rss_kb(), params, nbytes, mse, depth, n, acc,
            dyn_scale, dyn_depth, dyn_params, layer_add, layer_drop,
            or_add, or_drop, and_add, and_drop,
-           hold_mse, hold_acc);
+           hold_mse, hold_acc, init_layers);
 }
 
 static double mse_of(AltNet *a, double **X, double **Y, size_t n)
@@ -178,7 +178,7 @@ static void run_xy(const char *task, AltNet *a, double **X, double **Y,
     emit(a->impl, task, train_s, infer_s, infer_n,
          a->param_count(a->ctx), a->nbytes(a->ctx),
          m, n, acc, depth, dyn_scale, dyn_depth, dyn_params,
-         ladd, ldrop, oa, od, aa, ad, m, acc);
+         ladd, ldrop, oa, od, aa, ad, m, acc, 2);
 }
 
 static void bench_xor(AltNet (*open)(size_t, size_t))
@@ -187,10 +187,56 @@ static void bench_xor(AltNet (*open)(size_t, size_t))
     double Yd[4][1] = {{0},{1},{1},{0}};
     double *X[4], *Y[4];
     for (int i = 0; i < 4; i++) { X[i] = Xd[i]; Y[i] = Yd[i]; }
+
+    srand(34972);
     AltNet a = open(2, 1);
-    if (a.set_dynamic)
-        a.set_dynamic(a.ctx, strncmp(a.impl, "type-nn-", 8) == 0);
-    run_xy("xor", &a, X, Y, 4, 400, 0.08, 20000, -1.0);
+    a.init(a.ctx);
+    TnnSnap before, after;
+    type_nn_alt_snap(&a, &before);
+    size_t p0 = a.param_count ? a.param_count(a.ctx) : 0;
+    double t0 = wall_s();
+    type_nn_alt_train(&a, X, Y, 4, 2000, 0.08);
+    double train_s = wall_s() - t0;
+    type_nn_alt_snap(&a, &after);
+    double dyn_scale = 0.0;
+    int dyn_depth = 0;
+    type_nn_alt_dyn_score(&before, &after, &dyn_scale, &dyn_depth);
+    size_t p1 = a.param_count ? a.param_count(a.ctx) : p0;
+    size_t infer_n = 0;
+    double infer_s = time_alt_infer(&a, X, 4, 20000, &infer_n);
+    double m = mse_of(&a, X, Y, 4);
+    double acc = 0.0;
+    for (int i = 0; i < 4; i++) {
+        double y = 0.0;
+        a.forward(a.ctx, Xd[i], &y);
+        if ((y >= 0.5) == (Yd[i][0] >= 0.5)) acc += 1.0;
+    }
+    acc *= 0.25;
+
+    double hold_mse = 0.0, hold_acc = 0.0;
+    for (int h = 0; h < 4; h++) {
+        srand(34972u + (unsigned)h * 17u);
+        AltNet f = open(2, 1);
+        f.init(f.ctx);
+        double *Xt[3], *Yt[3];
+        int k = 0;
+        for (int i = 0; i < 4; i++)
+            if (i != h) { Xt[k] = Xd[i]; Yt[k] = Yd[i]; k++; }
+        type_nn_alt_train(&f, Xt, Yt, 3, 2000, 0.08);
+        double y = 0.0;
+        f.forward(f.ctx, Xd[h], &y);
+        double d = y - Yd[h][0];
+        hold_mse += d * d;
+        if ((y >= 0.5) == (Yd[h][0] >= 0.5)) hold_acc += 1.0;
+        f.free(f.ctx);
+    }
+    hold_mse *= 0.25;
+    hold_acc *= 0.25;
+
+    emit(a.impl, "xor", train_s, infer_s, infer_n,
+         p1, a.nbytes(a.ctx), m, 4, acc,
+         a.depth ? a.depth(a.ctx) : 1, dyn_scale, dyn_depth, (long)p1 - (long)p0,
+         0, 0, 0, 0, 0, 0, hold_mse, hold_acc, 2);
     a.free(a.ctx);
 }
 
@@ -302,7 +348,7 @@ static void bench_real(AltNet (*open)(size_t, size_t),
              a.param_count(a.ctx), a.nbytes(a.ctx),
              tr_mse, ds.n, tr_acc,
              a.depth ? a.depth(a.ctx) : 1, dyn_scale, dyn_depth, dyn_params,
-             ladd, ldrop, oa, od, aa, ad, te_mse, te_acc);
+             ladd, ldrop, oa, od, aa, ad, te_mse, te_acc, 2);
     }
     free(Xtr); free(Ytr); free(perm);
     a.free(a.ctx);

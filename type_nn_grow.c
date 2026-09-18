@@ -1,5 +1,6 @@
 #include "type_nn_grow.h"
 #include "type_nn_layer.h"
+#include "type_nn_ln.h"
 
 #include <math.h>
 #include <string.h>
@@ -96,6 +97,77 @@ int tnn_grow_apply(Network *net, const char *name)
         net->sched_cut  = 0.80;
         g_grow = net;
         return 1;
+    } else if (!strcmp(name, "scale-phase") || !strcmp(name, "Gphase")) {
+        /* No count cap. Grow / cut / shrink from u. */
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_FREE
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.70;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-signal") || !strcmp(name, "Gsignal")) {
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_FREE
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.70;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-norm") || !strcmp(name, "Gnorm")) {
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_NORM | TNN_G_FREE
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.70;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-assemble") || !strcmp(name, "Gassemble")) {
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_ASSEMBLE | TNN_G_FREE
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.70;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-compose") || !strcmp(name, "Gcompose")) {
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_COMPOSE | TNN_G_NORM | TNN_G_FREE
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.70;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale") || !strcmp(name, "Gscale")
+            || !strcmp(name, "scale-pulse") || !strcmp(name, "Gpulse")) {
+        /* Canonical type-nn: dummy-Or And scale, dummy-width Or scale,
+           signal cut, assemble-before-And. No count cap. */
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_NORM
+                      | TNN_G_ASSEMBLE | TNN_G_FREE | TNN_G_WIDTH
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.75;
+        g_grow = net;
+        return 1;
+    } else if (!strcmp(name, "scale-forge") || !strcmp(name, "Gforge")) {
+        /* Pulse + compose (degree → identity hidden) + residual clock. */
+        net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_NORM
+                      | TNN_G_ASSEMBLE | TNN_G_COMPOSE | TNN_G_FREE
+                      | TNN_G_CLOCK
+                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
+                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+        net->max_or = (size_t)-1 / 4;
+        net->sched_grow = 0.40;
+        net->sched_cut  = 0.75;
+        g_grow = net;
+        return 1;
     } else
         return 0;
 
@@ -109,6 +181,66 @@ int tnn_grow_apply(Network *net, const char *name)
     else if (p)
         net->max_or = (size_t)-1 / 4;
     return 1;
+}
+
+int tnn_grow_phase(const Network *net)
+{
+    if (!net) return 2;
+    double u = network_progress(net);
+    double grow = net->sched_grow > 0 ? net->sched_grow : 0.35;
+    double cut  = net->sched_cut  > 0 ? net->sched_cut  : 0.75;
+    /* Residual EMA stretches grow on loud files (wine 3-way, wdbc)
+       and shortens it when the type has already collapsed. */
+    if (net->growpol & TNN_G_CLOCK) {
+        double e = net->ema_rms;
+        if (e < 0.0) e = 0.0;
+        if (e > 1.0) e = 1.0;
+        grow = 0.32 + 0.30 * e;
+        cut  = grow + 0.20 + 0.08 * e;
+        if (grow > 0.62) grow = 0.62;
+        if (cut > 0.88) cut = 0.88;
+    }
+    if (u < grow) return 0;
+    if (u < cut)  return 1;
+    return 2;
+}
+
+double tnn_grow_signal_or(const OrNode *o)
+{
+    if (!o) return 0.0;
+    /* Forward contribution of this factor to its And: |Or| · |cofactor|. */
+    return fabs(o->value) * (fabs(o->accum) + 1e-12);
+}
+
+double tnn_grow_signal_and(const AndNode *a)
+{
+    if (!a) return 0.0;
+    double aa = (a->expn > 0.0) ? a->expn : 1.0;
+    /* |A|^a times the incoming gradient magnitude (how loud the head is). */
+    return pow(fabs(a->value) + 1e-12, aa) * (fabs(a->grad) + 1e-12);
+}
+
+double tnn_grow_thresh(const Network *net, double signal)
+{
+    int ph = tnn_grow_phase(net);
+    double lo, hi;
+    if (ph <= 0) {
+        /* Grow: dummy must leave ×1 by a real margin. */
+        lo = 0.06;
+        hi = 0.12;
+    } else if (ph == 1) {
+        lo = 0.08;
+        hi = 0.16;
+    } else {
+        lo = 0.10;
+        hi = 0.20;
+    }
+    double s = signal / (signal + 1.0);
+    double t = hi + (lo - hi) * s;
+    /* Cut/shrink only: a saturated factor is not precious precision. */
+    if (ph >= 1 && signal > 20.0)
+        t = hi;
+    return t;
 }
 
 static int or_is_dummy(const OrNode *o)
@@ -166,22 +298,41 @@ static double sum_live_or_grad(const AndNode *a)
     return s;
 }
 
-static double sum_live_or_wgrad(const AndNode *a)
+static void live_or_wgrad(const AndNode *a, double *sum, size_t *n)
 {
     double s = 0.0;
+    size_t k = 0;
     const OrNode *o = a ? a->or_row : NULL;
     while (o) {
         if (!or_is_dummy(o)) {
             s += fabs(o->bias.grad);
+            k++;
             const WeightNode *w = o->weight;
             while (w) {
                 s += fabs(w->grad);
+                k++;
                 w = w->right;
             }
         }
         o = o->right;
     }
+    if (sum) *sum = s;
+    if (n) *n = k;
+}
+
+static double sum_live_or_wgrad(const AndNode *a)
+{
+    double s = 0.0;
+    live_or_wgrad(a, &s, NULL);
     return s;
+}
+
+static double mean_live_or_wgrad(const AndNode *a)
+{
+    double s = 0.0;
+    size_t k = 0;
+    live_or_wgrad(a, &s, &k);
+    return k ? s / (double)k : 0.0;
 }
 
 static int live_ors_specialized(const AndNode *a)
@@ -247,16 +398,38 @@ static double sum_live_and_grad(const Layer *l, size_t index)
     return s;
 }
 
+static void live_and_wgrad(const Layer *l, size_t index, double *sum, size_t *n)
+{
+    double s = 0.0;
+    size_t k = 0;
+    const AndNode *a = l ? l->and_row : NULL;
+    while (a) {
+        if (a->right_index == index && !and_is_dummy_g(a)) {
+            double os = 0.0;
+            size_t on = 0;
+            live_or_wgrad(a, &os, &on);
+            s += os + fabs(a->expn_grad);
+            k += on + 1;
+        }
+        a = a->right;
+    }
+    if (sum) *sum = s;
+    if (n) *n = k;
+}
+
 static double sum_live_and_wgrad(const Layer *l, size_t index)
 {
     double s = 0.0;
-    const AndNode *a = l ? l->and_row : NULL;
-    while (a) {
-        if (a->right_index == index && !and_is_dummy_g(a))
-            s += sum_live_or_wgrad(a) + fabs(a->expn_grad);
-        a = a->right;
-    }
+    live_and_wgrad(l, index, &s, NULL);
     return s;
+}
+
+static double mean_live_and_wgrad(const Layer *l, size_t index)
+{
+    double s = 0.0;
+    size_t k = 0;
+    live_and_wgrad(l, index, &s, &k);
+    return k ? s / (double)k : 0.0;
 }
 
 static int live_ands_specialized(const Layer *l, size_t index)
@@ -294,7 +467,15 @@ static int live_and_sign_conflict(const Layer *l, size_t index, double d_z)
 static int gate_or(unsigned p, const AndNode *a, double ad, double d_and)
 {
     int energy = ad > TNN_G_K * (sum_live_or_grad(a) + 1e-12);
-    int jac    = ad > TNN_G_T && sum_live_or_wgrad(a) < TNN_G_JAC_K * ad;
+    int jac;
+    if (g_grow && (g_grow->growpol & TNN_G_NORM)) {
+        double rms = g_grow->last_dloss_rms;
+        if (rms < 1e-6) rms = 1e-6;
+        jac = (ad / rms) > TNN_G_T
+           && mean_live_or_wgrad(a) < TNN_G_JAC_K * (ad / rms);
+    } else {
+        jac = ad > TNN_G_T && sum_live_or_wgrad(a) < TNN_G_JAC_K * ad;
+    }
     int both_ej = (p & TNN_G_OR_ENERGY) && (p & TNN_G_OR_JAC);
 
     if (p & TNN_G_OR_KEEP) return 1;
@@ -320,8 +501,16 @@ static int gate_and(unsigned p, const Layer *l, size_t index,
                     double ad, double d_z)
 {
     int energy = ad > TNN_G_K * (sum_live_and_grad(l, index) + 1e-12);
-    int jac    = ad > TNN_G_T
-              && sum_live_and_wgrad(l, index) < TNN_G_JAC_K * ad;
+    int jac;
+    if (g_grow && (g_grow->growpol & TNN_G_NORM)) {
+        double rms = g_grow->last_dloss_rms;
+        if (rms < 1e-6) rms = 1e-6;
+        jac = (ad / rms) > TNN_G_T
+           && mean_live_and_wgrad(l, index) < TNN_G_JAC_K * (ad / rms);
+    } else {
+        jac = ad > TNN_G_T
+           && sum_live_and_wgrad(l, index) < TNN_G_JAC_K * ad;
+    }
     int both_ej = (p & TNN_G_AND_ENERGY) && (p & TNN_G_AND_JAC);
 
     if (p & TNN_G_AND_KEEP) return 1;
@@ -343,11 +532,55 @@ static int gate_and(unsigned p, const Layer *l, size_t index,
     return 0;
 }
 
-int tnn_grow_want_or(const AndNode *a, double d_and)
+static size_t live_or_count(const AndNode *a)
+{
+    size_t n = 0;
+    const OrNode *o = a ? a->or_row : NULL;
+    while (o) {
+        if (!or_is_dummy(o)) n++;
+        o = o->right;
+    }
+    return n;
+}
+
+int tnn_grow_want_or(AndNode *a, double d_and)
 {
     if (!g_grow || !a) return 0;
     unsigned p = g_grow->growpol;
     if (!isfinite(d_and)) return 0;
+    if (p & TNN_G_PHASE) {
+        int ph = tnn_grow_phase(g_grow);
+        if (has_dummy_or(a)) return 0;
+        if (!isfinite(a->value) || fabs(a->value) > 20.0) return 0;
+        if (a->probe_cool > 0) {
+            a->probe_cool--;
+            return 0;
+        }
+        /* And scaling = dummy Or rule. The dummy just got weight in
+           this backward pass (otherwise has_dummy_or would be true).
+           Grow / cut: replace it so the list can still leave 1.
+           Shrink: keep the live factors; do not open a new dummy. */
+        if (ph >= 2) return 0;
+        /* Still unexplained? A quiet residual does not need another Or. */
+        {
+            double rms = g_grow->last_dloss_rms;
+            if (rms < 0.06) return 0;
+            if (fabs(d_and) < 0.15 * (rms < 1e-6 ? 1e-6 : rms))
+                return 0;
+        }
+        /* Degree-2 incoming type (XOR) is already a product of two
+           affines. Extra live Ors only break the Boolean. */
+        {
+            size_t cap = 6;
+            if (g_grow->in_size <= 2) cap = 2;
+            if (live_or_count(a) >= cap)
+                return 0;
+        }
+        if ((p & TNN_G_COMPOSE) && ph == 0 && live_or_count(a) >= 2)
+            g_grow->ask_depth = 1;
+        a->probe_cool = ph == 0 ? 16 : 24;
+        return 1;
+    }
     if ((p & TNN_G_CAP) && (p & TNN_G_SCHED)) {
         double u = network_progress(g_grow);
         double grow = g_grow->sched_grow > 0 ? g_grow->sched_grow : 0.30;
@@ -393,6 +626,74 @@ int tnn_grow_want_and(const Layer *l, size_t index, double d_z)
 {
     if (!g_grow || !l) return 0;
     unsigned p = g_grow->growpol;
+    if (p & TNN_G_PHASE) {
+        int ph = tnn_grow_phase(g_grow);
+        if (ph >= 2) return 0;
+        const AndNode *it = l->and_row;
+        while (it) {
+            if (it->right_index == index && and_is_dummy_g(it))
+                return 0;
+            it = it->right;
+        }
+        if (!isfinite(d_z)) return 0;
+        {
+            AndNode *slot = l->and_row;
+            while (slot) {
+                if (slot->right_index == index) {
+                    if (slot->probe_cool > 0) {
+                        slot->probe_cool--;
+                        return 0;
+                    }
+                    break;
+                }
+                slot = slot->right;
+            }
+        }
+        if (((p & TNN_G_ASSEMBLE) || ((p & TNN_G_CLOCK) && l->in_size > 16))
+            && ph < 2) {
+            /* A live clause with room on a is another copy of the
+               same type, not a new generator. FREE still prefers
+               raising a, but will open an And when energy is loud. */
+            const AndNode *liv = l->and_row;
+            while (liv) {
+                if (liv->right_index == index && !and_is_dummy_g(liv)
+                    && liv->expn < LN_A_CAP * 0.8)
+                    return 0;
+                liv = liv->right;
+            }
+        }
+        double ad = fabs(d_z);
+        double rms = g_grow->last_dloss_rms;
+        if (rms < 1e-6) rms = 1e-6;
+        int want;
+        if (ph == 0) {
+            want = gate_and(TNN_G_AND_ENERGY | TNN_G_AND_JAC, l, index, ad, d_z);
+            if ((p & TNN_G_CLOCK) && want == 0 && g_grow->out_size > 1
+                && l->in_size <= 16) {
+                size_t nlive = 0;
+                const AndNode *c = l->and_row;
+                while (c) {
+                    if (c->right_index == index && !and_is_dummy_g(c))
+                        nlive++;
+                    c = c->right;
+                }
+                if ((ad / rms) > 0.25 && nlive < 2)
+                    want = 1;
+            }
+        } else
+            want = gate_and(TNN_G_AND_JAC, l, index, ad, d_z);
+        if (want) {
+            AndNode *slot = l->and_row;
+            while (slot) {
+                if (slot->right_index == index) {
+                    slot->probe_cool = 8;
+                    break;
+                }
+                slot = slot->right;
+            }
+        }
+        return want;
+    }
     const AndNode *a = l->and_row;
     while (a) {
         if (a->right_index == index && and_is_dummy_g(a))

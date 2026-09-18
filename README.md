@@ -1,37 +1,100 @@
 # type-nn
 
-C And-Or net. An And is a product of Ors. Dummy Or / dummy And are
-identity factors (`×1`). After back-prop, extra identities drop.
+A typed product network. The algebra is the one in
+[Type Mechanics](https://hadilq.com/posts/type-mechanics/): a type is a
+generating function, an **Or** is a sum-type (affine factor / incoming
+coordinate), an **And** is a product-type, and a **layer** is a partition
+function over those clauses. The readout is a natural log. Structure is
+not a hyper-parameter — Or width, And width, and Depth are the three
+scaling problems the net has to solve while it trains.
 
-Scale recipes have **no max_or and no max_and**. Live factors are
-unbounded. The only occupancy rule is the dummy rule (at most one
-identity Or per And, one identity And per output).
+The assembly index \(a_{i,r}\) is the one from assembly theory: how many
+copies of clause \(r\) the generating function already carries. Raising
+\(a\) is another copy of the same type. A new product factor is a new
+generator.
 
-Depth recipes insert an identity hidden the same way. `depth-early`
-does it at step 0 and keeps it. `depth-born` allocates the hidden
-before init (random, c-mlp width). Details: [AUDIT.md](AUDIT.md),
-[PROBES.md](PROBES.md), board in [BOARD.txt](BOARD.txt).
+Initial depth is the type's own size
 
-Current board (`./bench_type_nn TASK name`):
+\[
+\mathrm{depth}_0 = \lfloor 1 + \ln(n m)\rfloor
+\]
 
-- `scale-energy` / `scale-jac` / `scale-mix` — the three width gates
-- `depth-early` / `depth-hold` / `depth-born` — the depth gates
-- `scale-mix+depth-early`, `scale-energy+depth-hold`,
-  `scale-ej+depth-born`, … — both axes
-- `c-mlp` — Linear-ReLU-Linear baseline (`./bench_alts TASK c-mlp`)
+with \(n\) incoming and \(m\) outgoing. Those layers share the tail's
+constructor. Training then scales Or / And / Depth **up** while the
+residual is unexplained, and **drops** only in the later stages.
 
-Each board model has its own `type_nn_*.c` / `type_nn_*.h` wrapper.
+## Algebra
+
+Each Or is an affine sum over the incoming type:
+
+\[
+\mathrm{Or}_{i,r,t} = b_{i,r,t} + \sum_j W_{i,r,t,j}\, x_j
+\]
+
+An And is the product of its Ors raised to the assembly index. Dummy
+Or / dummy And are identity factors (\(\times 1\)).
+
+The typed product on a head is the layer's partition function
+
+\[
+A_k = \prod_r (\mathrm{Or}_{k,r})^{a_{k,r}},
+\qquad
+z_k = \mathrm{sign}(A_k)\,\ln\bigl(1 + |A_k|/\tau_k\bigr)
+\]
+
+**Every** layer emits \(z\). The output of one layer is the input of the
+next, so a type-nn stack is as dense as an MLP of the same depth. \(\tau_k\)
+is a learned positive scale (born at \(1\)). \(a_{k,r}=1\) recovers the
+untyped product.
+
+## The three scaling problems
+
+All three edits happen inside back-prop. Grow early
+(\(u < \mathrm{sched\_grow}\)). Drop only late
+(\(u \ge \mathrm{sched\_cut}\)).
+
+| axis | scale up | scale down |
+|------|----------|------------|
+| **Or** | the previous layer adds a dummy output coordinate and trains it; the current layer pairs that new incoming slot with a dummy weight | drop a dummy coordinate of the previous layer's output |
+| **And** | keep one dummy Or (\(\times 1\)) in the product. If back-prop gives it weight, append a new dummy identity Or | if two dummy identity Ors sit on the same And, drop one |
+| **Depth** | birth \(\lfloor 1+\ln(nm)\rfloor\) layers. Insert a typed layer **between any two layers** (the loudest residual junction), not only at the ends | drop a layer that has become an identity |
+
+There is no dataset-name gate and no `max_or` / `max_and` on the board
+recipe. Live factors are unbounded. The only occupancy rule is the dummy
+rule.
+
+## Board models
+
+Each remaining model is its own `type_nn_*.c` / `type_nn_*.h`.
+Ablations that were not a full type-nn recipe (or not c-mlp) are gone.
+
+| name | file | what it does |
+|------|------|----------------|
+| `type-nn` | `type_nn_model.c` | ln on every layer; Or / And / Depth dummy rule; early grow, late drop |
+| `c-mlp` | `type_nn_cmlp.c` | Linear-ReLU-Linear + ln tail (`./bench_alts TASK c-mlp`) |
+
+The goal of type-nn is to beat `c-mlp` **by scaling**, not by staying a
+tiny product.
+
+Every model back-props mean-MSE `(y−t)/n_out`, uses per-sample Adam
+with the task lr, and emits the same ln tail. `nbytes` is
+`params * sizeof(double)`. XOR `hold_*` is leave-one-out. Details in
+[AUDIT.md](AUDIT.md). Strategies: [SCALE.md](SCALE.md). They do not
+read a dataset name.
 
 ## Fair split
 
 xorshift32 Fisher-Yates, seed 34972, 70/30. Same cut for every impl.
+Honesty limits (optimizer, loss scale, readout, `nbytes`) are in
+[AUDIT.md](AUDIT.md). Lean statements of the product identities live in
+`lean/`.
 
-    ./bench_type_nn iris scale-mix+depth-early
+    ./bench_type_nn iris type-nn
     ./bench_alts iris c-mlp
     make test
     make bench
 
-`us/infer` is mean microseconds per `predict` / `forward` over at
-least 200 ms of wall time, printed to 6 decimals, floored at 1 ns so
-the column cannot print 0. diabetes has no `hold_acc` (regression).
-XOR `hold_acc` is threshold accuracy on all 4 points.
+`us/infer` is mean microseconds per `predict` / `forward` over at least
+200 ms of wall time, printed to 6 decimals, floored at 1 ns.
+diabetes has no `hold_acc` (regression). XOR `hold_acc` is threshold
+accuracy on all 4 points.

@@ -37,7 +37,7 @@ int main(void)
     }
     printf("\n");
     EXPECT(ok, "XOR");
-    EXPECT(a.param_count(a.ctx) == 33, "2-8-1 param count");
+    EXPECT(a.param_count(a.ctx) == 34, "2-8-1 + τ param count");
     a.free(a.ctx);
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

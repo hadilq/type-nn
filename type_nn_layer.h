@@ -44,6 +44,10 @@
 #define TNN_LP_BORN    8192u   /* hidden exists before init (random, MLP-like) */
 #define TNN_LP_WIN     16384u  /* winner: 6-wide born hidden */
 #define TNN_LP_SCHED   32768u  /* early insert / late drop from u */
+#define TNN_LP_PHASE   65536u  /* grow/cut/shrink depth with the Or/And clock */
+#define TNN_LP_LINEAR  131072u /* hidden stays degree-1 (typed linear map) */
+#define TNN_LP_COMPOSE 262144u /* insert when grow asked for depth */
+#define TNN_LP_DEPTH   524288u /* grow: sparse identity; shrink: drop it */
 #define TNN_LP_KEEP_DW  1e-3   /* identity hidden with tinier ||dW|| drops */
 #define TNN_LP_HOLD_DW  1e-5   /* HOLD: only drop a truly frozen identity */
 #define TNN_LP_HOLD_U   0.65   /* HOLD: no drop while step/span < 0.65 */
@@ -62,7 +66,13 @@ int      tnn_layer_at_cap(const Layer *l, size_t max_or);
 double   tnn_layer_l1(const InOutNode *n);
 double   tnn_layer_dw_l1(const Layer *l);
 void     tnn_layer_step(Network *net);
-/* Insert the first hidden now (BORN: before init; EARLY: after init). */
+/* Insert the first hidden now (BORN: before init; EARLY: after init).
+   DEPTH: stack to 1+ln(n m) sparse identities after tail init. */
 void     tnn_layer_birth(Network *net);
+/* Floor(1 + ln(n m)), at least 1. n = in dim, m = out dim. */
+int      tnn_layer_init_depth(size_t in, size_t out);
+/* Or-scale: dummy output coordinate on a hidden layer, paired with
+   dummy incoming weights on the next layer. Grow early, drop late. */
+void     tnn_layer_width_step(Network *net);
 
 #endif
