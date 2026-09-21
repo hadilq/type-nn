@@ -35,7 +35,7 @@ echo "== c-mlp  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
 /tmp/bench_alts "$TASK" c-mlp | tee /tmp/alt_bench.jsonl
 
 python3 - << 'PY'
-import json, collections, pathlib
+import json, collections, pathlib, re
 rows = []
 for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl"):
     try:
@@ -43,8 +43,9 @@ for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl"):
             for line in f:
                 line = line.strip()
                 if line.startswith("{"):
-                    line = (line.replace("-nan", "null").replace("nan", "null")
-                                .replace("-inf", "null").replace("inf", "null"))
+                    # Only token inf/nan, never the letters inside us_per_infer.
+                    line = re.sub(r'(?<=[:\[,\s])-?(?:nan|inf)(?=[,\]}\s])',
+                                  'null', line, flags=re.I)
                     rows.append(json.loads(line))
     except FileNotFoundError:
         pass

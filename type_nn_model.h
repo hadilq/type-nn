@@ -17,6 +17,8 @@
  *          hidden late.
  *
  * Every layer emits y = sign(z) ln(1+|z|/τ). Grow early, drop late.
+ * Birth width is the task type m; dummy Or weights are born 0 so
+ * the params column only counts weights back-prop actually moved.
  */
 void type_nn_model_apply(Network *net);
 

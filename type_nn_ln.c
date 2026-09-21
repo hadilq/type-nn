@@ -371,6 +371,8 @@ double tnn_ln_lr_a(double lr)
 
 double tnn_ln_project_a(double a)
 {
+    /* Strict positivity only. LN_AMAX is a named control recipe
+       (ln-cap); the board type-nn lets a grow if back-prop says so. */
     if (!isfinite(a) || a < LN_A_MIN)
         a = LN_A_MIN;
     if (tnn_ln_bit(LN_AMAX) && a > LN_A_CAP)

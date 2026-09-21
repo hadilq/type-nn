@@ -77,15 +77,15 @@
 #define LN_ELL_CAP 20.0   /* |ℓ̃| < 20,  e^{20} ≈ 4.85e8 */
 #define LN_LOG_EPS 1e-12
 #define LN_OR_CAP  4.0
-#define LN_A_CAP   3.0    /* a ∈ [LN_A_MIN, 3] when LN_AMAX */
-#define LN_A_MIN   1e-4   /* strict positivity of the assembly index */
+#define LN_A_CAP   3.0    /* only when LN_AMAX (ln-cap control) */
+#define LN_A_MIN   1e-4   /* strict positivity; board type-nn has no a_max */
 #define LN_TAU_MIN 1e-4   /* strict positivity of the learned tail scale */
 
 #define LN_ADAM_B1 0.9
 #define LN_ADAM_B2 0.999
 #define LN_ADAM_EPS 1e-8
 
-double   tnn_ln_project_a(double a);   /* a ∈ [LN_A_MIN, (LN_A_CAP)] */
+double   tnn_ln_project_a(double a);   /* a ≥ LN_A_MIN; cap only if LN_AMAX */
 
 typedef struct {
     double z;      /* signed typed product */

@@ -183,7 +183,10 @@ static int layer_is_id_band(const Layer *l, double t)
         if (picks) seen++;
         a = a->right;
     }
-    return seen >= l->out_size;
+    /* Extra dummy outgoing coordinates are Or-width, not a
+       broken diagonal. The layer is still ×1 on the incoming type
+       when every input coordinate has a picker. */
+    return seen >= l->in_size && seen > 0;
 }
 
 int tnn_layer_is_identity(const Layer *l)
@@ -195,6 +198,10 @@ static size_t hidden_wanted_out(const Network *net, const Layer *at)
 {
     size_t in = at && at->in_size ? at->in_size : net->in_size;
     size_t out = net->tail ? net->tail->out_size : net->out_size;
+    /* Typed product: birth and train-time inserts are width m.
+       Never a square n→n map, never c-mlp's 8/16 hidden. */
+    if (tnn_ln_on() || (net->layerpol & TNN_LP_DEPTH))
+        return tnn_layer_type_width(net->in_size, net->out_size);
     /* Born (random hidden): match c-mlp width. Early identity insert
        stays square so the map does not jump at step 0. */
     if (net->layerpol & TNN_LP_BORN) {
@@ -228,6 +235,8 @@ static size_t hidden_wanted_out(const Network *net, const Layer *at)
     return in;
 }
 
+static void slim_typed_layer(Layer *l);
+
 static void layer_drop_zero_weights(Layer *l)
 {
     if (!l) return;
@@ -259,12 +268,17 @@ static Layer *insert_hidden(Network *net, Layer *at)
     if (!net || !at) return NULL;
     if (net->depth >= net->max_depth) return NULL;
     size_t want = hidden_wanted_out(net, at);
-    if (net->layerpol & TNN_LP_DEPTH)
-        want = at->in_size ? at->in_size : net->in_size;
+    int typed = tnn_ln_on() || (net->layerpol & TNN_LP_DEPTH);
     Layer *hid;
-    if (net->layerpol & TNN_LP_DEPTH) {
-        /* Same typed product as the tail, same random init. Not ×1. */
-        hid = network_insert_similar(net, at);
+    if (typed) {
+        /* Typed product of type width — not a square n→n map,
+           not tanh/ReLU. Slim keeps one And per head and one
+           dummy Or inside that product. */
+        hid = network_insert_typed(net, at, want);
+        if (hid) {
+            hid->birth_out = want;
+            slim_typed_layer(hid);
+        }
     } else {
         hid = network_insert_identity(net, at);
         if (hid)
@@ -305,6 +319,23 @@ int tnn_layer_init_depth(size_t in, size_t out)
     int d = (int)(1.0 + log(nm));
     if (d < 1) d = 1;
     return d;
+}
+
+size_t tnn_layer_type_width(size_t in, size_t out)
+{
+    (void)in;
+    /* Birth width is the task type m. Or-scale may grow it up to
+       the type-size cap in tnn_layer_width_step. Never n. */
+    return out < 1 ? 1 : out;
+}
+
+size_t tnn_layer_width_cap(size_t in, size_t out)
+{
+    if (in < 1) in = 1;
+    size_t w = tnn_layer_type_width(in, out);
+    size_t t = 1 + (size_t)log(1.0 + (double)in);
+    if (t > w) w = t;
+    return w + 1; /* one dummy coordinate beyond the type */
 }
 
 /* Extra maps the residual clock may still open on top of 1+ln(nm). */
@@ -430,8 +461,8 @@ static int should_insert(const Network *net)
                 return 0;
             int extra = depth_extra(net);
             int have = count_hiddens(net);
-            /* Birth already stacked floor(1+ln(nm)). Grow adds only
-               when compose asked for a typed linear map. */
+            /* Birth already stacked floor(1+ln(nm)). Grow may still
+               insert one typed layer between the loudest pair. */
             int want = extra;
             if (net->ask_depth && want < have + 1)
                 want = have + 1;
@@ -439,11 +470,13 @@ static int should_insert(const Network *net)
                 want = 1;
             if (have >= want)
                 return 0;
+            if ((size_t)(have + 1) >= net->max_depth)
+                return 0;
             unsigned extra_u = extra > 0 ? (unsigned)extra : 1u;
             unsigned gap = 24;
             if (net->orcool_span)
-                gap = net->orcool_span / (4u * extra_u + 1u);
-            if (gap < 24) gap = 24;
+                gap = net->orcool_span / (6u * extra_u + 1u);
+            if (gap < 16) gap = 16;
             if (net->orcool_step < gap * (unsigned)(have + 1))
                 return 0;
             return 1;
@@ -504,6 +537,88 @@ static int should_insert(const Network *net)
     return 0;
 }
 
+/* One And per head, one live Or + one dummy Or. Extra clauses and
+   extra live affines are And-scale / Or-scale work, not birth. */
+static void slim_typed_layer(Layer *l)
+{
+    if (!l) return;
+    AndNode dummy = {0};
+    dummy.right = l->and_row;
+    AndNode *prev = &dummy;
+    unsigned seen = 0;
+    /* Drop extra Ands that share an output index. Keep first. */
+    while (prev->right) {
+        AndNode *cur = prev->right;
+        int dup = 0;
+        AndNode *u = dummy.right;
+        while (u && u != cur) {
+            if (u->right_index == cur->right_index) { dup = 1; break; }
+            u = u->right;
+        }
+        if (dup) {
+            prev->right = cur->right;
+            OrNode *o = cur->or_row;
+            while (o) {
+                OrNode *on = o->right;
+                WeightNode *w = o->weight;
+                while (w) {
+                    WeightNode *wn = w->right;
+                    free(w);
+                    w = wn;
+                }
+                free(o);
+                o = on;
+            }
+            free(cur);
+            continue;
+        }
+        /* Keep the first Or as the live affine; drop the rest, then
+           append one dummy identity Or (W = 0, b ≈ 1). */
+        if (cur->or_row) {
+            OrNode *live = cur->or_row;
+            OrNode *rest = live->right;
+            live->right = NULL;
+            while (rest) {
+                OrNode *on = rest->right;
+                WeightNode *w = rest->weight;
+                while (w) {
+                    WeightNode *wn = w->right;
+                    free(w);
+                    w = wn;
+                }
+                free(rest);
+                rest = on;
+            }
+            /* Dummy Or is W = 0, b ≈ 1. Live Or keeps the full incoming type. */
+            OrNode *d = (OrNode *)calloc(1, sizeof(OrNode));
+            if (d) {
+                d->bias.value = 1.0;
+                d->quantization = cur->quantization;
+                d->right_index = live->right_index + 1;
+                if (l->in_size) {
+                    WeightNode *head = NULL, *wp = NULL;
+                    for (size_t i = 0; i < l->in_size; i++) {
+                        WeightNode *n = (WeightNode *)calloc(1, sizeof(WeightNode));
+                        if (!n) break;
+                        n->right_index = i;
+                        n->quantization = cur->quantization;
+                        n->value = 0.0;
+                        if (!head) head = n;
+                        if (wp) wp->right = n;
+                        wp = n;
+                    }
+                    d->weight = head;
+                }
+                live->right = d;
+            }
+        }
+        seen++;
+        prev = cur;
+    }
+    l->and_row = dummy.right;
+    (void)seen;
+}
+
 void tnn_layer_birth(Network *net)
 {
     if (!net || !net->tail) return;
@@ -517,16 +632,27 @@ void tnn_layer_birth(Network *net)
     if ((size_t)want > net->max_depth)
         net->max_depth = (size_t)want;
     net->init_depth = (size_t)want;
-    /* Birth is not a train-time L+. Insert similar product layers
+    /* Birth is not a train-time L+. Insert typed-product layers
        with the tail's constructor; do not count them as or/layer adds. */
     unsigned add0 = net->layer_add;
+    size_t w = tnn_layer_type_width(net->in_size, net->out_size);
     while ((int)net->depth < want) {
-        if (net->layerpol & TNN_LP_DEPTH)
-            network_insert_identity(net, net->tail);
-        else if (tnn_ln_on())
-            network_insert_similar(net, net->tail);
+        /* Birth copies the tail's typed product at type width w.
+           Never layer_create(n, n). Identity inserts are the
+           train-time depth dummy, not the initial stack. */
+        Layer *hid = NULL;
+        if (tnn_ln_on() || (net->layerpol & TNN_LP_DEPTH))
+            hid = network_insert_typed(net, net->tail, w);
         else
-            insert_hidden(net, net->tail);
+            hid = insert_hidden(net, net->tail);
+        if (hid && (net->layerpol & TNN_LP_DEPTH)) {
+            hid->birth_out = w;
+            slim_typed_layer(hid);
+        }
+    }
+    if (net->layerpol & TNN_LP_DEPTH) {
+        slim_typed_layer(net->tail);
+        net->tail->birth_out = net->tail->out_size;
     }
     net->layer_add = add0;
 }
@@ -586,7 +712,7 @@ static void make_head_dummy(AndNode *a)
     if (!a) return;
     OrNode *o = a->or_row;
     while (o) {
-        o->bias.value = 1.0;
+        o->bias.value = 1.0 + ((double)rand() / (double)RAND_MAX * 2.0 - 1.0) * 1e-3;
         WeightNode *w = o->weight;
         while (w) {
             w->value = 0.0;
@@ -617,25 +743,28 @@ void tnn_layer_width_step(Network *net)
     for (Layer *prev = net->head; prev && prev->next; prev = prev->next) {
         Layer *cur = prev->next;
         size_t nd = count_dummy_outs(prev);
-        if (ph < 2) {
-            /* Grow / cut: keep exactly one dummy outgoing coordinate.
-               An identity hidden is the depth dummy; do not widen it
-               until it has started to move. */
-            if (nd == 0 && !tnn_layer_is_identity(prev)) {
+        if (ph == 0) {
+            /* Or scale-up (early only): previous layer adds one dummy
+               output coordinate; current layer pairs it with W=0. */
+            if (nd == 0) {
                 size_t idx = next_out_index(prev);
-                size_t cap = prev->in_size + 4;
-                if (idx > cap) continue; /* runaway fence, not a task cap */
+                size_t cap = tnn_layer_width_cap(net->in_size, net->out_size);
+                if (idx >= cap) continue; /* type-size fence, not n and not a file name */
+                if (net->last_dloss_rms < 0.12) continue;
                 layer_set_outputs(prev, idx + 1);
                 make_head_dummy(and_at_index(prev, idx));
                 layer_align_inputs(cur, idx + 1);
+                net->or_add++;
             }
-        } else if (nd >= 2) {
-            /* Shrink: drop extra dummy coordinates, keep one.
+        } else if (ph >= 2 && nd >= 1) {
+            /* Or scale-down: drop extra dummy coordinates, keep one.
                Only the last index is cheap to trim. */
             size_t m = next_out_index(prev);
-            if (m > 1 && index_is_dummy_out(prev, m - 1)) {
+            size_t keep = prev->birth_out ? prev->birth_out : 1;
+            if (m > keep && index_is_dummy_out(prev, m - 1)) {
                 layer_set_outputs(prev, m - 1);
                 layer_align_inputs(cur, m - 1);
+                net->or_drop++;
             }
         }
     }

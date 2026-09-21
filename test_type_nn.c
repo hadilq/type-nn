@@ -1327,10 +1327,59 @@ static void test_board_pulse_and_depth(void)
         network_train(net, X, Y, 1, 0);
         EXPECT(net->init_depth == 3, "type-nn births floor(1+ln12)=3");
         EXPECT(network_depth(net) == 3, "stack is 3 product layers");
-        EXPECT(tnn_layer_is_identity(net->head),
-               "depth dummy is an identity hidden at birth");
+        EXPECT(!tnn_layer_is_identity(net->head),
+               "birth layers share the tail constructor, not ×1");
         EXPECT(or_count(net->head->and_row->or_row) >= 1,
                "hidden keeps an Or list");
+        EXPECT(net->head->out_size == tnn_layer_type_width(4, 3),
+               "iris hidden is type width, not 4→4");
+        EXPECT(and_count(net->head->and_row) == net->head->out_size,
+               "one And per head (And-scale is dummy Or, not extra clauses)");
+    }
+
+    {
+        /* Wide in, thin out: never a square n→n typed map. */
+        Network *wide = network_create(34, 1);
+        network_set_dynamic(wide, 1);
+        network_set_verbose(wide, 0);
+        network_set_andpol(wide, "type-nn");
+        network_init_weights(wide);
+        double xd[34];
+        double yd[1] = {0.0};
+        for (int i = 0; i < 34; i++) xd[i] = 0.01 * (i + 1);
+        double *Xw[1] = {xd};
+        double *Yw[1] = {yd};
+        network_train(wide, Xw, Yw, 1, 0);
+        EXPECT(tnn_layer_init_depth(34, 1) == 4, "iono depth floor(1+ln34)=4");
+        EXPECT(network_depth(wide) == 4, "iono stack is 4 typed layers");
+        EXPECT(wide->head->in_size == 34, "first layer consumes n");
+        EXPECT(wide->head->out_size == 1, "first layer emits task m, not 34");
+        EXPECT(wide->tail->out_size == 1, "tail is task m");
+        EXPECT(tnn_layer_type_width(34, 1) == 1, "type width is m");
+        EXPECT(tnn_layer_width_cap(34, 1) < 34, "Or-scale cap is not n");
+        for (Layer *L = wide->head; L; L = L->next) {
+            EXPECT(L->out_size < 34, "no 34-wide hidden");
+            EXPECT(L->in_size == 34 || L->in_size <= tnn_layer_width_cap(34, 1),
+                   "no 34-wide incoming type on a hidden");
+            EXPECT(and_count(L->and_row) == L->out_size,
+                   "one And per head on every typed layer");
+            if (L->and_row)
+                EXPECT(or_count(L->and_row->or_row) >= 2,
+                       "And-scale is a dummy Or inside the product");
+        }
+        /* A few train steps: And-scale must not open extra clauses. */
+        {
+            unsigned and0 = wide->and_add;
+            network_train(wide, Xw, Yw, 1, 8);
+            EXPECT(wide->and_add == and0,
+                   "And-scale does not spawn extra And clauses");
+            for (Layer *L = wide->head; L; L = L->next) {
+                EXPECT(L->out_size < 34, "still no 34-wide hidden after train");
+                EXPECT(and_count(L->and_row) == L->out_size,
+                       "still one And per head after train");
+            }
+        }
+        network_free(wide);
     }
 
     network_set_andpol(net, "type-nn");

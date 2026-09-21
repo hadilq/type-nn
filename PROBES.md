@@ -21,8 +21,10 @@ Or, And, and Depth use the same dummy rule:
     ∂z / ∂A    = 1 / (τ + |A|)
     ∂L / ∂y    = (y − t) / n_out
 
-Dummy Or is born (b,W)=(1,0) so Or ≡ 1.
-Dummy And is a product of dummy Ors, so And ≡ 1.
+Dummy Or is born (b,W)≈(1,0) on the live incoming type so Or ≡ 1
+and back-prop can move those zeros. W is exactly 0 at birth so a
+dummy does not occupy the params column. A dummy with no weight
+list cannot receive ∂L/∂W and And-scaling never fires.
 Dummy incoming coordinate is born with weight 0 on the next layer.
 
 The log-space rewrite (`type_nn_ln.c`) is the same product with

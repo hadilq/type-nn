@@ -78,6 +78,7 @@ typedef struct InOutNode {
 typedef struct Layer {
     size_t       in_size;
     size_t       out_size;
+    size_t       birth_out; /* constructor width; Or-scale cap is birth_out+2 */
     AndNode      *and_row;
     InOutNode    *in;
     InOutNode    *out;
@@ -166,8 +167,12 @@ double   network_progress(const Network *net); /* u in [0,1] */
 /* Insert an identity hidden layer in front of `at` (NULL = before tail). */
 Layer   *network_insert_identity(Network *net, Layer *at);
 /* Insert a typed-product hidden with the same constructor as the tail
-   (DEFAULT_OR_FACTORS affines per head, same random init). Not identity. */
+   (DEFAULT_OR_FACTORS affines per head, same random init). Not identity.
+   Square: in = out = at->in_size. Prefer network_insert_typed for type-nn. */
 Layer   *network_insert_similar(Network *net, Layer *at);
+/* Typed-product layer of shape (at->in_size → out). Never a square n→n
+   unless out happens to equal the incoming type. Aligns `at` to `out`. */
+Layer   *network_insert_typed(Network *net, Layer *at, size_t out);
 /* Remove a hidden layer. Returns 0 on success, -1 if refused. */
 int      network_remove_layer(Network *net, Layer *node);
 

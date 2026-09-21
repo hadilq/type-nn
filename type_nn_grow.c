@@ -145,12 +145,14 @@ int tnn_grow_apply(Network *net, const char *name)
         return 1;
     } else if (!strcmp(name, "scale") || !strcmp(name, "Gscale")
             || !strcmp(name, "scale-pulse") || !strcmp(name, "Gpulse")) {
-        /* Canonical type-nn: dummy-Or And scale, dummy-width Or scale,
-           signal cut, assemble-before-And. No count cap. */
+        /* Canonical type-nn: dummy-Or And scale (degree), dummy-width
+           Or scale (previous-layer coordinate), signal cut. No
+           dummy-And clause spawn — A_k is one product of Ors. No
+           count cap. No top-k: live typed factors keep BP weights. */
         net->growpol |= TNN_G_PHASE | TNN_G_SIGNAL | TNN_G_NORM
                       | TNN_G_ASSEMBLE | TNN_G_FREE | TNN_G_WIDTH
-                      | TNN_G_OR_ENERGY | TNN_G_AND_ENERGY
-                      | TNN_G_OR_JAC | TNN_G_AND_JAC;
+                      | TNN_G_TOPK
+                      | TNN_G_OR_ENERGY | TNN_G_OR_JAC;
         net->max_or = (size_t)-1 / 4;
         net->sched_grow = 0.40;
         net->sched_cut  = 0.75;
@@ -556,29 +558,23 @@ int tnn_grow_want_or(AndNode *a, double d_and)
             a->probe_cool--;
             return 0;
         }
-        /* And scaling = dummy Or rule. The dummy just got weight in
-           this backward pass (otherwise has_dummy_or would be true).
-           Grow / cut: replace it so the list can still leave 1.
-           Shrink: keep the live factors; do not open a new dummy. */
+        /* And scaling = dummy Or rule. n_ones==0 means the dummy
+           just got weight. Grow / cut: always append a new ×1 Or
+           so the product can still leave 1. Shrink: no new dummy. */
         if (ph >= 2) return 0;
-        /* Still unexplained? A quiet residual does not need another Or. */
         {
-            double rms = g_grow->last_dloss_rms;
-            if (rms < 0.06) return 0;
-            if (fabs(d_and) < 0.15 * (rms < 1e-6 ? 1e-6 : rms))
-                return 0;
-        }
-        /* Degree-2 incoming type (XOR) is already a product of two
-           affines. Extra live Ors only break the Boolean. */
-        {
-            size_t cap = 6;
-            if (g_grow->in_size <= 2) cap = 2;
+            /* Live-Or fence from the incoming type size, not a
+               dataset name. XOR (n=2) stays degree-2. No extra>2
+               clamp — that was a special number. */
+            size_t d = g_grow->in_size ? g_grow->in_size : 1;
+            size_t cap = 1 + (size_t)log(1.0 + (double)d);
+            if (cap < 2) cap = 2;
             if (live_or_count(a) >= cap)
                 return 0;
         }
         if ((p & TNN_G_COMPOSE) && ph == 0 && live_or_count(a) >= 2)
             g_grow->ask_depth = 1;
-        a->probe_cool = ph == 0 ? 16 : 24;
+        a->probe_cool = ph == 0 ? 8 : 16;
         return 1;
     }
     if ((p & TNN_G_CAP) && (p & TNN_G_SCHED)) {
@@ -626,6 +622,14 @@ int tnn_grow_want_and(const Layer *l, size_t index, double d_z)
 {
     if (!g_grow || !l) return 0;
     unsigned p = g_grow->growpol;
+    /* And-scale on the board is a dummy Or inside the existing
+       product, not a new And clause. Skip clause spawn unless a
+       recipe actually asked for an And gate. */
+    unsigned and_bits = TNN_G_AND_KEEP | TNN_G_AND_RESID | TNN_G_AND_RATIO
+                      | TNN_G_AND_DEAD | TNN_G_AND_ENERGY | TNN_G_AND_JAC
+                      | TNN_G_AND_SLACK | TNN_G_AND_SIGN;
+    if ((p & TNN_G_PHASE) && !(p & and_bits))
+        return 0;
     if (p & TNN_G_PHASE) {
         int ph = tnn_grow_phase(g_grow);
         if (ph >= 2) return 0;
@@ -649,18 +653,24 @@ int tnn_grow_want_and(const Layer *l, size_t index, double d_z)
                 slot = slot->right;
             }
         }
-        if (((p & TNN_G_ASSEMBLE) || ((p & TNN_G_CLOCK) && l->in_size > 16))
-            && ph < 2) {
-            /* A live clause with room on a is another copy of the
-               same type, not a new generator. FREE still prefers
-               raising a, but will open an And when energy is loud. */
-            const AndNode *liv = l->and_row;
-            while (liv) {
-                if (liv->right_index == index && !and_is_dummy_g(liv)
-                    && liv->expn < LN_A_CAP * 0.8)
-                    return 0;
-                liv = liv->right;
+        /* a_{i,r} has no upper cap. Assembly-index descent is free
+           to raise a on every live clause; that does not block a
+           new generator. A type-size fence (not an a-cap) keeps
+           the number of live Ands from running away. */
+        {
+            size_t nlive = 0;
+            const AndNode *c = l->and_row;
+            while (c) {
+                if (c->right_index == index && !and_is_dummy_g(c))
+                    nlive++;
+                c = c->right;
             }
+            size_t d = g_grow->in_size ? g_grow->in_size : 1;
+            size_t cap = 2;
+            if (d > 4)
+                cap = 3;
+            if (nlive >= cap)
+                return 0;
         }
         double ad = fabs(d_z);
         double rms = g_grow->last_dloss_rms;

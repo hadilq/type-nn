@@ -71,6 +71,10 @@ void     tnn_layer_step(Network *net);
 void     tnn_layer_birth(Network *net);
 /* Floor(1 + ln(n m)), at least 1. n = in dim, m = out dim. */
 int      tnn_layer_init_depth(size_t in, size_t out);
+/* Birth width = task m. Never the raw incoming n. */
+size_t   tnn_layer_type_width(size_t in, size_t out);
+/* Or-scale cap: max(m, 1+ln(1+n))+1. Type-size, not a file name. */
+size_t   tnn_layer_width_cap(size_t in, size_t out);
 /* Or-scale: dummy output coordinate on a hidden layer, paired with
    dummy incoming weights on the next layer. Grow early, drop late. */
 void     tnn_layer_width_step(Network *net);

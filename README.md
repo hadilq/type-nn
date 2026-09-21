@@ -20,8 +20,14 @@ Initial depth is the type's own size
 \]
 
 with \(n\) incoming and \(m\) outgoing. Those layers share the tail's
-constructor. Training then scales Or / And / Depth **up** while the
-residual is unexplained, and **drops** only in the later stages.
+constructor (typed product + ln) and birth at the task width \(m\).
+Every layer in a type-nn model is a typed product + ln — never tanh,
+ReLU, or a square \(n\to n\) map. Or-scale may add a dummy coordinate
+up to the type-size cap \(1+\ln(1+n)\). A train-time depth dummy is
+an identity typed product between the loudest pair. Training then
+scales Or / And / Depth **up** while the residual is unexplained, and
+**drops** only in the later stages. Dummy Or weights are born at 0 so
+`params` only counts what back-prop moved.
 
 ## Algebra
 
@@ -42,10 +48,12 @@ A_k = \prod_r (\mathrm{Or}_{k,r})^{a_{k,r}},
 z_k = \mathrm{sign}(A_k)\,\ln\bigl(1 + |A_k|/\tau_k\bigr)
 \]
 
-**Every** layer emits \(z\). The output of one layer is the input of the
-next, so a type-nn stack is as dense as an MLP of the same depth. \(\tau_k\)
-is a learned positive scale (born at \(1\)). \(a_{k,r}=1\) recovers the
-untyped product.
+**Every typed layer** emits \(z\). An identity hidden (depth dummy)
+skips the log so the map stays \(\times 1\) until back-prop moves the
+diagonal. The output of one layer is the input of the next, so a type-nn
+stack is as dense as an MLP of the same depth. \(\tau_k\) is a learned
+positive scale (born at \(1\)). \(a_{k,r}=1\) recovers the untyped
+product.
 
 ## The three scaling problems
 
@@ -55,13 +63,18 @@ All three edits happen inside back-prop. Grow early
 
 | axis | scale up | scale down |
 |------|----------|------------|
-| **Or** | the previous layer adds a dummy output coordinate and trains it; the current layer pairs that new incoming slot with a dummy weight | drop a dummy coordinate of the previous layer's output |
-| **And** | keep one dummy Or (\(\times 1\)) in the product. If back-prop gives it weight, append a new dummy identity Or | if two dummy identity Ors sit on the same And, drop one |
+| **Or** | the previous layer adds a dummy output coordinate and trains it; the current layer pairs that new incoming slot with a dummy weight (born at 0) | drop a dummy coordinate of the previous layer's output |
+| **And** | keep one dummy Or (\(\times 1\), \(b=1, W=0\)) in the product. If back-prop gives those dummy weights a value, append a new dummy identity Or | if two dummy identity Ors sit on the same And, drop one |
 | **Depth** | birth \(\lfloor 1+\ln(nm)\rfloor\) layers. Insert a typed layer **between any two layers** (the loudest residual junction), not only at the ends | drop a layer that has become an identity |
 
+Dummy Ors are born with a full zero weight list on the incoming type.
+Without that list, back-prop can only move the bias and And-scaling
+never fires.
+
 There is no dataset-name gate and no `max_or` / `max_and` on the board
-recipe. Live factors are unbounded. The only occupancy rule is the dummy
-rule.
+recipe. Live factors are unbounded except for a type-size fence
+\(1+\ln(1+n)\) that does not read a file name. The occupancy rule is
+the dummy rule.
 
 ## Board models
 
@@ -70,7 +83,7 @@ Ablations that were not a full type-nn recipe (or not c-mlp) are gone.
 
 | name | file | what it does |
 |------|------|----------------|
-| `type-nn` | `type_nn_model.c` | ln on every layer; Or / And / Depth dummy rule; early grow, late drop |
+| `type-nn` | `type_nn_model.c` | ln on every typed layer; Or / And / Depth dummy rule; early grow, late drop |
 | `c-mlp` | `type_nn_cmlp.c` | Linear-ReLU-Linear + ln tail (`./bench_alts TASK c-mlp`) |
 
 The goal of type-nn is to beat `c-mlp` **by scaling**, not by staying a
