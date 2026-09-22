@@ -10,8 +10,7 @@
    a_r is the assembly index of Or_r in the And.
 
    Tactic note. [simpl] also unfolds [Z.mul] and turns [1 * p] into a
-   [match] on [p] that [ring] cannot read; that was the error in the
-   previous version (prod_app, line 87). Here only the list functions
+   [match] on [p] that [ring] cannot read. Here only the list functions
    are unfolded, with [cbn [f ...]].                                     *)
 
 From Stdlib Require Import List ZArith Lia.

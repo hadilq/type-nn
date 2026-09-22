@@ -15,7 +15,7 @@ L0 -> L    layers at birth -> after training. type-nn births
 or/and/L   type-nn probes promoted (+) and live items pruned (-) on the
            Or-width, And-degree and depth axes.
 models     type-nn          evidence-driven scaling (BIC on measured MSE)
-           type-nn-overfit  the previous type-nn, frozen
+           type-nn-overfit  displacement-only scaling (frozen reference)
            c-mlp            Linear-ReLU-Linear baseline
 verdict    each type-nn against c-mlp: hold_mse difference, clear if it
            exceeds two standard errors, otherwise within noise; and the
@@ -24,39 +24,39 @@ xor        fit only: 4 points have no hold-out.
 
 task       impl             hold_mse       ± hold_acc      ± train_mse  params     ± train_s  us/inf    L0->L   or+  or-  and+ and-   L+   L-
 ---------------------------------------------------------------------------------------------------------------------------------------------
-xor        type-nn               n/a  0.0000      n/a  0.000   0.00000    26.4   3.6   0.013   0.104    1->2.0   0.0  0.0   3.6  0.0  1.0  0.0
-xor        type-nn-overfit       n/a  0.0000      n/a  0.000   0.00000   107.6  73.4   0.013   0.526    1->3.0   2.0  0.0  16.6  0.4  2.0  0.0
+xor        type-nn               n/a  0.0000      n/a  0.000   0.00000    26.4   3.6   0.014   0.106    1->2.0   0.0  0.0   3.6  0.0  1.0  0.0
+xor        type-nn-overfit       n/a  0.0000      n/a  0.000   0.00000   107.6  73.4   0.012   0.541    1->3.0   2.0  0.0  16.6  0.4  2.0  0.0
 xor        c-mlp                 n/a  0.0000      n/a  0.000   0.00000    33.0   0.0   0.002   0.026    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
            type-nn: fit only; params 0.80x c-mlp (fewer)
            type-nn-overfit: fit only; params 3.26x c-mlp (more)
 
-iris       type-nn            0.0215  0.0069    0.969  0.012   0.00084   125.4  52.2   0.366   0.501    3->3.8   1.0  1.4  12.8  0.6  0.8  0.0
-iris       type-nn-overfit    0.0249  0.0044    0.960  0.010   0.00181   174.6  29.8   0.065   0.489    3->4.0   2.6  1.4  19.2  1.8  1.0  0.0
+iris       type-nn            0.0215  0.0069    0.969  0.012   0.00084   125.4  52.2   0.367   0.500    3->3.8   1.0  1.4  12.8  0.6  0.8  0.0
+iris       type-nn-overfit    0.0249  0.0044    0.960  0.010   0.00181   174.6  29.8   0.064   0.496    3->4.0   2.6  1.4  19.2  1.8  1.0  0.0
 iris       c-mlp              0.0280  0.0061    0.956  0.000   0.01087    67.0   0.0   0.012   0.044    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
            type-nn: type-nn lower hold_mse by 0.0065 (2se 0.0083) -> within noise; params 1.87x c-mlp (more)
            type-nn-overfit: type-nn-overfit lower hold_mse by 0.0032 (2se 0.0067) -> within noise; params 2.61x c-mlp (more)
 
-wine       type-nn            0.0277  0.0048    0.956  0.010   0.00008   169.8  52.3   0.430   0.556    4->5.0   2.0  2.6  15.4  3.2  1.2  0.2
-wine       type-nn-overfit    0.0209  0.0105    0.967  0.020   0.00016   392.6  43.7   0.099   0.743    4->5.0   4.6  0.6  27.4  0.8  1.0  0.0
-wine       c-mlp              0.0234  0.0056    0.974  0.017   0.00224   275.0   0.0   0.024   0.111    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
+wine       type-nn            0.0277  0.0048    0.956  0.010   0.00008   169.8  52.3   0.429   0.562    4->5.0   2.0  2.6  15.4  3.2  1.2  0.2
+wine       type-nn-overfit    0.0209  0.0105    0.967  0.020   0.00016   392.6  43.7   0.095   0.729    4->5.0   4.6  0.6  27.4  0.8  1.0  0.0
+wine       c-mlp              0.0234  0.0056    0.974  0.017   0.00224   275.0   0.0   0.023   0.112    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
            type-nn: c-mlp lower hold_mse by 0.0043 (2se 0.0066) -> within noise; params 0.62x c-mlp (fewer)
            type-nn-overfit: type-nn-overfit lower hold_mse by 0.0025 (2se 0.0107) -> within noise; params 1.43x c-mlp (more)
 
-wdbc       type-nn            0.0448  0.0048    0.951  0.007   0.00010   162.8  28.7   0.147   0.293    3->4.0   1.2  0.0   5.6  0.0  1.0  0.0
-wdbc       type-nn-overfit    0.0459  0.0030    0.950  0.003   0.00042   162.6  31.2   0.052   0.246    3->3.2   1.2  0.0   5.2  0.6  0.4  0.2
-wdbc       c-mlp              0.0438  0.0017    0.946  0.008   0.00518   513.0   0.0   0.077   0.152    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
+wdbc       type-nn            0.0448  0.0048    0.951  0.007   0.00010   162.8  28.7   0.143   0.294    3->4.0   1.2  0.0   5.6  0.0  1.0  0.0
+wdbc       type-nn-overfit    0.0459  0.0030    0.950  0.003   0.00042   162.6  31.2   0.050   0.241    3->3.2   1.2  0.0   5.2  0.6  0.4  0.2
+wdbc       c-mlp              0.0438  0.0017    0.946  0.008   0.00518   513.0   0.0   0.075   0.149    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
            type-nn: c-mlp lower hold_mse by 0.0010 (2se 0.0046) -> within noise; params 0.32x c-mlp (fewer)
            type-nn-overfit: c-mlp lower hold_mse by 0.0021 (2se 0.0031) -> within noise; params 0.32x c-mlp (fewer)
 
-diabetes   type-nn            0.0329  0.0010      n/a  0.000   0.02733    20.4   7.2   0.049   0.138    2->2.4   0.0  0.0   1.8  0.8  0.8  0.4
-diabetes   type-nn-overfit    0.0371  0.0015      n/a  0.000   0.02404    33.0   8.5   0.029   0.146    2->2.2   0.0  0.0   2.4  0.8  0.4  0.2
-diabetes   c-mlp              0.0488  0.0042      n/a  0.000   0.01354   193.0   0.0   0.031   0.082    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
+diabetes   type-nn            0.0329  0.0010      n/a  0.000   0.02733    20.4   7.2   0.047   0.133    2->2.4   0.0  0.0   1.8  0.8  0.8  0.4
+diabetes   type-nn-overfit    0.0371  0.0015      n/a  0.000   0.02404    33.0   8.5   0.028   0.143    2->2.2   0.0  0.0   2.4  0.8  0.4  0.2
+diabetes   c-mlp              0.0488  0.0042      n/a  0.000   0.01354   193.0   0.0   0.030   0.081    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
            type-nn: type-nn lower hold_mse by 0.0158 (2se 0.0038) -> clear; params 0.11x c-mlp (fewer)
            type-nn-overfit: type-nn-overfit lower hold_mse by 0.0117 (2se 0.0040) -> clear; params 0.17x c-mlp (fewer)
 
-ionosphere type-nn            0.0886  0.0111    0.904  0.014   0.00970   153.8  65.0   0.196   0.090    4->4.4   2.2  0.6   7.2  1.0  1.2  0.8
+ionosphere type-nn            0.0886  0.0111    0.904  0.014   0.00970   153.8  65.0   0.191   0.091    4->4.4   2.2  0.6   7.2  1.0  1.2  0.8
 ionosphere type-nn-overfit    0.0813  0.0119    0.913  0.018   0.00433   298.0  60.5   0.075   0.575    4->4.4   4.2  0.2  12.0  0.4  0.6  0.2
-ionosphere c-mlp              0.1461  0.0155    0.896  0.018   0.01631   577.0   0.0   0.054   0.177    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
+ionosphere c-mlp              0.1461  0.0155    0.896  0.018   0.01631   577.0   0.0   0.054   0.175    2->2.0   0.0  0.0   0.0  0.0  0.0  0.0
            type-nn: type-nn lower hold_mse by 0.0575 (2se 0.0170) -> clear; params 0.27x c-mlp (fewer)
            type-nn-overfit: type-nn-overfit lower hold_mse by 0.0648 (2se 0.0174) -> clear; params 0.52x c-mlp (fewer)
 
