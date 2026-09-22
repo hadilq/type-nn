@@ -1,5 +1,6 @@
-#include "type_nn.h"
-#include "type_nn_scale.h"
+/* FROZEN: type-nn-overfit. Do not edit; it is the reference the new type-nn is measured against. */
+#include "type_nn_overfit.h"
+#include "type_nn_overfit_scale.h"
 #include "common.h"
 
 #include <math.h>
@@ -32,7 +33,7 @@ static double sigmoid(double ell)
     return e / (1.0 + e);
 }
 
-size_t tnn_birth_depth(size_t n_in, size_t n_out)
+size_t tnno_birth_depth(size_t n_in, size_t n_out)
 {
     long d = lround(log(1.0 + (double)n_in * (double)n_out));
     return d < 1 ? 1 : (size_t)d;
@@ -42,7 +43,7 @@ size_t tnn_birth_depth(size_t n_in, size_t n_out)
    Or
    ════════════════════════════════════════════════════════════════════ */
 
-static void or_alloc(TnnOr *o, size_t n_in)
+static void or_alloc(TnnoOr *o, size_t n_in)
 {
     memset(o, 0, sizeof(*o));
     size_t n = n_in ? n_in : 1;
@@ -52,14 +53,14 @@ static void or_alloc(TnnOr *o, size_t n_in)
     o->a = 1.0;
 }
 
-static void or_free(TnnOr *o)
+static void or_free(TnnoOr *o)
 {
     free(o->w); free(o->mw); free(o->vw);
     o->w = o->mw = o->vw = NULL;
 }
 
 /* torch.nn.Linear init, the same law c-mlp uses: U(±1/sqrt(fan_in)). */
-void tnn_or_init_random(TnnOr *o, size_t n_in, unsigned *rng)
+void tnno_or_init_random(TnnoOr *o, size_t n_in, unsigned *rng)
 {
     double k = 1.0 / sqrt((double)(n_in ? n_in : 1));
     for (size_t j = 0; j < n_in; j++) o->w[j] = k * tnn_uniform(rng);
@@ -69,7 +70,7 @@ void tnn_or_init_random(TnnOr *o, size_t n_in, unsigned *rng)
 
 /* Identity Or: w = 0, b = 1, a = 1, plus noise of the given amplitude.
    This is the value 1, so Or^a = 1 for every a. */
-void tnn_or_init_identity(TnnOr *o, size_t n_in, double noise, unsigned *rng)
+void tnno_or_init_identity(TnnoOr *o, size_t n_in, double noise, unsigned *rng)
 {
     for (size_t j = 0; j < n_in; j++) o->w[j] = noise * tnn_uniform(rng);
     o->b = 1.0 + noise * tnn_uniform(rng);
@@ -80,26 +81,26 @@ void tnn_or_init_identity(TnnOr *o, size_t n_in, double noise, unsigned *rng)
    Unit (one And)
    ════════════════════════════════════════════════════════════════════ */
 
-TnnOr *tnn_unit_add_or(TnnUnit *u, size_t n_in)
+TnnoOr *tnno_unit_add_or(TnnoUnit *u, size_t n_in)
 {
     if (u->n_or == u->cap_or) {
         u->cap_or = u->cap_or ? 2 * u->cap_or : 2;
-        u->ors = (TnnOr *)xrealloc(u->ors, u->cap_or * sizeof(TnnOr));
+        u->ors = (TnnoOr *)xrealloc(u->ors, u->cap_or * sizeof(TnnoOr));
     }
-    TnnOr *o = &u->ors[u->n_or++];
+    TnnoOr *o = &u->ors[u->n_or++];
     or_alloc(o, n_in);
     return o;
 }
 
-void tnn_unit_drop_or(TnnUnit *u, size_t r)
+void tnno_unit_drop_or(TnnoUnit *u, size_t r)
 {
     if (r >= u->n_or) return;
     or_free(&u->ors[r]);
-    memmove(&u->ors[r], &u->ors[r + 1], (u->n_or - r - 1) * sizeof(TnnOr));
+    memmove(&u->ors[r], &u->ors[r + 1], (u->n_or - r - 1) * sizeof(TnnoOr));
     u->n_or--;
 }
 
-static void unit_free(TnnUnit *u)
+static void unit_free(TnnoUnit *u)
 {
     for (size_t r = 0; r < u->n_or; r++) or_free(&u->ors[r]);
     free(u->ors);
@@ -110,7 +111,7 @@ static void unit_free(TnnUnit *u)
    Layer
    ════════════════════════════════════════════════════════════════════ */
 
-static void layer_size_inputs(TnnLayer *l)
+static void layer_size_inputs(TnnoLayer *l)
 {
     size_t n = l->n_in ? l->n_in : 1;
     l->dx  = (double *)xrealloc(l->dx,  n * sizeof(double));
@@ -121,14 +122,14 @@ static void layer_size_inputs(TnnLayer *l)
     l->sxu = (double *)xrealloc(l->sxu, n * sizeof(double));
 }
 
-static void layer_size_outputs(TnnLayer *l)
+static void layer_size_outputs(TnnoLayer *l)
 {
     size_t n = l->n_out ? l->n_out : 1;
     l->z  = (double *)xrealloc(l->z,  n * sizeof(double));
     l->gz = (double *)xrealloc(l->gz, n * sizeof(double));
 }
 
-void tnn_layer_reset_stats(TnnLayer *l)
+void tnno_layer_reset_stats(TnnoLayer *l)
 {
     size_t n = l->n_in ? l->n_in : 1;
     memset(l->sx,  0, n * sizeof(double));
@@ -140,18 +141,18 @@ void tnn_layer_reset_stats(TnnLayer *l)
     l->ns = 0;
 }
 
-TnnLayer *tnn_layer_new(size_t n_in, size_t n_out)
+TnnoLayer *tnno_layer_new(size_t n_in, size_t n_out)
 {
-    TnnLayer *l = (TnnLayer *)calloc(1, sizeof(TnnLayer));
+    TnnoLayer *l = (TnnoLayer *)calloc(1, sizeof(TnnoLayer));
     l->n_in = n_in;
     l->n_out = 0;
     layer_size_inputs(l);
-    tnn_layer_reset_stats(l);
-    for (size_t k = 0; k < n_out; k++) tnn_layer_add_unit(l);
+    tnno_layer_reset_stats(l);
+    for (size_t k = 0; k < n_out; k++) tnno_layer_add_unit(l);
     return l;
 }
 
-void tnn_layer_free(TnnLayer *l)
+void tnno_layer_free(TnnoLayer *l)
 {
     if (!l) return;
     for (size_t k = 0; k < l->n_out; k++) unit_free(&l->units[k]);
@@ -161,35 +162,35 @@ void tnn_layer_free(TnnLayer *l)
     free(l);
 }
 
-void tnn_layer_add_unit(TnnLayer *l)
+void tnno_layer_add_unit(TnnoLayer *l)
 {
     if (l->n_out == l->cap_units) {
         l->cap_units = l->cap_units ? 2 * l->cap_units : 4;
-        l->units = (TnnUnit *)xrealloc(l->units, l->cap_units * sizeof(TnnUnit));
+        l->units = (TnnoUnit *)xrealloc(l->units, l->cap_units * sizeof(TnnoUnit));
     }
-    memset(&l->units[l->n_out], 0, sizeof(TnnUnit));
+    memset(&l->units[l->n_out], 0, sizeof(TnnoUnit));
     l->n_out++;
     layer_size_outputs(l);
 }
 
-void tnn_layer_drop_unit(TnnLayer *l, size_t k)
+void tnno_layer_drop_unit(TnnoLayer *l, size_t k)
 {
     if (k >= l->n_out) return;
     unit_free(&l->units[k]);
-    memmove(&l->units[k], &l->units[k + 1], (l->n_out - k - 1) * sizeof(TnnUnit));
+    memmove(&l->units[k], &l->units[k + 1], (l->n_out - k - 1) * sizeof(TnnoUnit));
     l->n_out--;
     layer_size_outputs(l);
 }
 
 /* New incoming coordinate: every Or gets a weight born at exactly 0,
    so the layer computes the same function (Coq: widen_preserves). */
-void tnn_layer_add_input(TnnLayer *l)
+void tnno_layer_add_input(TnnoLayer *l)
 {
     size_t n = l->n_in + 1;
     for (size_t k = 0; k < l->n_out; k++) {
-        TnnUnit *u = &l->units[k];
+        TnnoUnit *u = &l->units[k];
         for (size_t r = 0; r < u->n_or; r++) {
-            TnnOr *o = &u->ors[r];
+            TnnoOr *o = &u->ors[r];
             o->w  = (double *)xrealloc(o->w,  n * sizeof(double));
             o->mw = (double *)xrealloc(o->mw, n * sizeof(double));
             o->vw = (double *)xrealloc(o->vw, n * sizeof(double));
@@ -198,17 +199,17 @@ void tnn_layer_add_input(TnnLayer *l)
     }
     l->n_in = n;
     layer_size_inputs(l);
-    tnn_layer_reset_stats(l);
+    tnno_layer_reset_stats(l);
 }
 
-void tnn_layer_drop_input(TnnLayer *l, size_t j)
+void tnno_layer_drop_input(TnnoLayer *l, size_t j)
 {
     if (j >= l->n_in) return;
     size_t tail = l->n_in - j - 1;
     for (size_t k = 0; k < l->n_out; k++) {
-        TnnUnit *u = &l->units[k];
+        TnnoUnit *u = &l->units[k];
         for (size_t r = 0; r < u->n_or; r++) {
-            TnnOr *o = &u->ors[r];
+            TnnoOr *o = &u->ors[r];
             memmove(&o->w[j],  &o->w[j + 1],  tail * sizeof(double));
             memmove(&o->mw[j], &o->mw[j + 1], tail * sizeof(double));
             memmove(&o->vw[j], &o->vw[j + 1], tail * sizeof(double));
@@ -216,37 +217,37 @@ void tnn_layer_drop_input(TnnLayer *l, size_t j)
     }
     l->n_in--;
     layer_size_inputs(l);
-    tnn_layer_reset_stats(l);
+    tnno_layer_reset_stats(l);
 }
 
 /* ════════════════════════════════════════════════════════════════════
    Network
    ════════════════════════════════════════════════════════════════════ */
 
-void tnn_net_insert_layer(TypeNN *net, size_t at, TnnLayer *l)
+void tnno_net_insert_layer(TypeNNOverfit *net, size_t at, TnnoLayer *l)
 {
     if (net->depth == net->cap) {
         net->cap = net->cap ? 2 * net->cap : 4;
-        net->L = (TnnLayer **)xrealloc(net->L, net->cap * sizeof(TnnLayer *));
+        net->L = (TnnoLayer **)xrealloc(net->L, net->cap * sizeof(TnnoLayer *));
     }
     if (at > net->depth) at = net->depth;
-    memmove(&net->L[at + 1], &net->L[at], (net->depth - at) * sizeof(TnnLayer *));
+    memmove(&net->L[at + 1], &net->L[at], (net->depth - at) * sizeof(TnnoLayer *));
     net->L[at] = l;
     net->depth++;
 }
 
-TnnLayer *tnn_net_remove_layer(TypeNN *net, size_t at)
+TnnoLayer *tnno_net_remove_layer(TypeNNOverfit *net, size_t at)
 {
     if (at >= net->depth) return NULL;
-    TnnLayer *l = net->L[at];
-    memmove(&net->L[at], &net->L[at + 1], (net->depth - at - 1) * sizeof(TnnLayer *));
+    TnnoLayer *l = net->L[at];
+    memmove(&net->L[at], &net->L[at + 1], (net->depth - at - 1) * sizeof(TnnoLayer *));
     net->depth--;
     return l;
 }
 
-TypeNN *tnn_create(size_t n_in, size_t n_out, unsigned seed)
+TypeNNOverfit *tnno_create(size_t n_in, size_t n_out, unsigned seed)
 {
-    TypeNN *net = (TypeNN *)calloc(1, sizeof(TypeNN));
+    TypeNNOverfit *net = (TypeNNOverfit *)calloc(1, sizeof(TypeNNOverfit));
     net->n_in = n_in;
     net->n_out = n_out;
     net->rng = seed ? seed : 1u;
@@ -255,21 +256,19 @@ TypeNN *tnn_create(size_t n_in, size_t n_out, unsigned seed)
     return net;
 }
 
-void tnn_free(TypeNN *net)
+void tnno_free(TypeNNOverfit *net)
 {
     if (!net) return;
-    for (size_t i = 0; i < net->depth; i++) tnn_layer_free(net->L[i]);
+    for (size_t i = 0; i < net->depth; i++) tnno_layer_free(net->L[i]);
     free(net->L);
     free(net->t_sum);
     free(net->t_sq);
-    free(net->cx);
-    free(net->ct);
     free(net);
 }
 
 /* Birth: round(ln(1 + n m)) typed layers, n → m → … → m. Every unit
    starts as one random Or (a degree-1 And). */
-void tnn_begin(TypeNN *net, size_t n_train, size_t epochs, double lr)
+void tnno_begin(TypeNNOverfit *net, size_t n_train, size_t epochs, double lr)
 {
     net->n_train = n_train;
     net->epochs = epochs;
@@ -277,31 +276,30 @@ void tnn_begin(TypeNN *net, size_t n_train, size_t epochs, double lr)
     net->step = 0;
     net->total = (long)(n_train * epochs);
     net->phase = 0;
-    net->crit_best = INFINITY;
 
-    size_t D = tnn_birth_depth(net->n_in, net->n_out);
+    size_t D = tnno_birth_depth(net->n_in, net->n_out);
     net->init_depth = D;
     size_t in = net->n_in;
     for (size_t i = 0; i < D; i++) {
-        TnnLayer *l = tnn_layer_new(in, net->n_out);
+        TnnoLayer *l = tnno_layer_new(in, net->n_out);
         for (size_t k = 0; k < l->n_out; k++) {
-            TnnOr *o = tnn_unit_add_or(&l->units[k], in);
-            tnn_or_init_random(o, in, &net->rng);
+            TnnoOr *o = tnno_unit_add_or(&l->units[k], in);
+            tnno_or_init_random(o, in, &net->rng);
         }
-        tnn_net_insert_layer(net, net->depth, l);
+        tnno_net_insert_layer(net, net->depth, l);
         in = net->n_out;
     }
-    tnn_scale_begin(net);
+    tnno_scale_begin(net);
 }
 
-void tnn_end(TypeNN *net)        { tnn_scale_end(net); }
-void tnn_epoch_end(TypeNN *net)  { tnn_scale_epoch(net); }
+void tnno_end(TypeNNOverfit *net)        { tnno_scale_end(net); }
+void tnno_epoch_end(TypeNNOverfit *net)  { tnno_scale_epoch(net); }
 
 /* ════════════════════════════════════════════════════════════════════
    Forward
    ════════════════════════════════════════════════════════════════════ */
 
-static void layer_forward(TnnLayer *l, const double *x, int stats)
+static void layer_forward(TnnoLayer *l, const double *x, int stats)
 {
     l->x = x;
     size_t n = l->n_in;
@@ -315,11 +313,11 @@ static void layer_forward(TnnLayer *l, const double *x, int stats)
         l->ns++;
     }
     for (size_t k = 0; k < l->n_out; k++) {
-        TnnUnit *u = &l->units[k];
+        TnnoUnit *u = &l->units[k];
         double ell = 0.0;
         int sgn = 1;
         for (size_t r = 0; r < u->n_or; r++) {
-            TnnOr *o = &u->ors[r];
+            TnnoOr *o = &u->ors[r];
             double v = o->b;
             for (size_t j = 0; j < n; j++) v += o->w[j] * x[j];
             o->o = v;
@@ -337,7 +335,7 @@ static void layer_forward(TnnLayer *l, const double *x, int stats)
     }
 }
 
-const double *tnn_forward(TypeNN *net, const double *x)
+const double *tnno_forward(TypeNNOverfit *net, const double *x)
 {
     const double *cur = x;
     for (size_t i = 0; i < net->depth; i++) {
@@ -362,7 +360,7 @@ const double *tnn_forward(TypeNN *net, const double *x)
    the derivative is the cofactor when a_r = 1 and 0 when a_r > 1.
    Then ∂o_r/∂w_j = x_j, ∂o_r/∂b = 1, ∂o_r/∂x_j = w_j.                   */
 
-static double zero_factor_slope(const TnnUnit *u, size_t r)
+static double zero_factor_slope(const TnnoUnit *u, size_t r)
 {
     if (u->ors[r].a > 1.0) return 0.0;
     double ell = 0.0;
@@ -377,7 +375,7 @@ static double zero_factor_slope(const TnnUnit *u, size_t r)
     return (double)sgn * exp(ell);   /* ∂z/∂A = 1 at A = 0 */
 }
 
-static void layer_backward(TypeNN *net, TnnLayer *l, const double *gz)
+static void layer_backward(TypeNNOverfit *net, TnnoLayer *l, const double *gz)
 {
     size_t n = l->n_in;
     const double *x = l->x;
@@ -385,11 +383,11 @@ static void layer_backward(TypeNN *net, TnnLayer *l, const double *gz)
     memset(l->dx, 0, (n ? n : 1) * sizeof(double));
 
     for (size_t k = 0; k < l->n_out; k++) {
-        TnnUnit *u = &l->units[k];
+        TnnoUnit *u = &l->units[k];
         double g = gz[k];
         double ss = (double)u->sgn * sigmoid(u->ell);   /* s σ(ℓ) */
         for (size_t r = 0; r < u->n_or; r++) {
-            TnnOr *o = &u->ors[r];
+            TnnoOr *o = &u->ors[r];
             double dz_do, dz_da;
             if (o->o != 0.0) {
                 dz_do = ss * o->a / o->o;
@@ -421,10 +419,10 @@ static void layer_backward(TypeNN *net, TnnLayer *l, const double *gz)
     }
 }
 
-void tnn_backward(TypeNN *net, const double *dy)
+void tnno_backward(TypeNNOverfit *net, const double *dy)
 {
     if (!net->depth) return;
-    TnnLayer *top = net->L[net->depth - 1];
+    TnnoLayer *top = net->L[net->depth - 1];
     if (net->training) {
         double m = (double)top->n_out, s = 0.0;
         for (size_t k = 0; k < top->n_out; k++) {
@@ -436,21 +434,10 @@ void tnn_backward(TypeNN *net, const double *dy)
         }
         net->loss_sum += s / m;
         net->loss_n++;
-        /* remember the pair for the evidence rule */
-        size_t ni = net->n_in, no = top->n_out;
-        if (net->cache_n == net->cache_cap) {
-            net->cache_cap = net->cache_cap ? 2 * net->cache_cap : 64;
-            net->cx = (double *)xrealloc(net->cx, net->cache_cap * (ni ? ni : 1) * sizeof(double));
-            net->ct = (double *)xrealloc(net->ct, net->cache_cap * no * sizeof(double));
-        }
-        memcpy(net->cx + net->cache_n * ni, net->L[0]->x, ni * sizeof(double));
-        for (size_t k = 0; k < no; k++)
-            net->ct[net->cache_n * no + k] = top->z[k] - m * dy[k];
-        net->cache_n++;
     }
     memcpy(top->gz, dy, top->n_out * sizeof(double));
     for (size_t i = net->depth; i-- > 0; ) {
-        TnnLayer *l = net->L[i];
+        TnnoLayer *l = net->L[i];
         layer_backward(net, l, l->gz);
         if (i > 0) memcpy(net->L[i - 1]->gz, l->dx, l->n_in * sizeof(double));
     }
@@ -462,11 +449,11 @@ void tnn_backward(TypeNN *net, const double *dy)
    Or, probes included. No weight is skipped for being small.
    ════════════════════════════════════════════════════════════════════ */
 
-size_t tnn_params(const TypeNN *net)
+size_t tnno_params(const TypeNNOverfit *net)
 {
     size_t p = 0;
     for (size_t i = 0; i < net->depth; i++) {
-        const TnnLayer *l = net->L[i];
+        const TnnoLayer *l = net->L[i];
         for (size_t k = 0; k < l->n_out; k++)
             p += l->units[k].n_or * (l->n_in + 2);
     }

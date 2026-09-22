@@ -1,10 +1,14 @@
 .direnv/
 test_type_nn
 test_type_nn_asan
+test_type_nn_overfit
 vortex*
 bench_alts
 test_alts
-bench_type_nn
+bench
 data/*.data
 data/diabetes.tab.txt
-
+test_cmlp
+bench_cmlp
+*.glob
+*.aux

@@ -1,104 +1,124 @@
-# Audit: is this benchmark honest, fair, and consistent?
+# Audit: is the benchmark honest, fair and consistent?
 
-Split, seed, optimizer, readout, loss scale, and `nbytes` are the
-same object on every board row.
+This file records the audit of the version this repository replaced. It
+covers what was wrong, the evidence, what changed, and what is still
+limited.
 
-## What is fair
+## 1. Honesty of the reported board
 
-- Same 70/30 cut for every impl: xorshift32 Fisher-Yates, seed 34972.
-- Same epoch count and reported lr per task.
-- Hold-out is never used for a structural decision. Spawn / insert /
-  drop look only at the sample just backwarded, plus the schedule
-  fraction \(u = \mathrm{step}/\mathrm{span}\).
-- `c-mlp` is Linear-ReLU-Linear then the type-nn ln tail, H = 8 if
-  in≤4 else 16. Param counts match that formula plus one `τ` per head.
-- The board type-nn is `type_nn_model.c` on top of
-  `type_nn.c` + `type_nn_ln.c` + `type_nn_grow.c` + `type_nn_layer.c`.
-- Birth depth is `floor(1 + ln(n m))`. Birth width is the task type
-  `m`. Neither formula reads a dataset name.
-- Dummy Or weights are born at 0. `params` / `nbytes` skip
-  `|w| < 1e-12`, same accounting as c-mlp (`params * sizeof(double)`).
+**The board was one favourable seed.** Every cell was trained from a
+single initialisation seed (34972). Re-running the *original* code with
+seeds 1–5 gives this (mean ± sd over 5 seeds, hold-out MSE):
 
-## What was not — now fixed
+| task | old board type-nn | old type-nn, seeds 1–5 | old c-mlp, seeds 1–5 | claimed | measured |
+|---|---|---|---|---|---|
+| wine | 0.0116 | 0.0391 ± 0.0152 | 0.0234 ± 0.0048 | type-nn 2× better | type-nn worse |
+| diabetes | 0.0351 | 0.0425 ± 0.0017 | 0.0456 ± 0.0050 | clear win | within noise |
+| iris | 0.0223 | 0.0273 ± 0.0036 | 0.0307 ± 0.0057 | win | within noise |
+| ionosphere | 0.0819 | 0.1048 ± 0.0282 | 0.1307 ± 0.0131 | win | lower, noisy |
+| wdbc | 0.0659 | 0.0602 ± 0.0052 | 0.0450 ± 0.0021 | loss | loss |
 
-1. **Optimizer.** type-nn and `c-mlp` both take per-sample Adam with
-   \(β_1=0.9\), \(β_2=0.999\), \(\varepsilon=10^{-8}\). Both multiply
-   the printed task lr by the same `TNN_ADAM_LR_SCALE` (0.1). There
-   is no one-sided fudge.
-2. **Loss gradient scale.** Both back-prop mean-MSE
-   `(y − t) / out`. No Huber clip.
-3. **Readout.** Both tails are
-   \(y = \mathrm{sign}(z)\,\ln(1+|z|/τ)\) with learned \(τ>0\) born
-   at 1. MSE is on that coordinate. type-nn also applies this ln on
-   every *typed* hidden layer so the stack is as dense as an MLP.
-   Identity hiddens skip the log so a depth dummy stays \(\times 1\).
-4. **nbytes.** Both columns are `params * sizeof(double)`. Learned
-   \(τ\) on every ln layer is counted.
-5. **XOR hold-out.** Train metrics still use all 4 points (the
-   Boolean). `hold_mse` / `hold_acc` are leave-one-out: train on 3,
-   score the held point, average the four folds. Same protocol on
-   type-nn and c-mlp. Diabetes is still regression (`hold_acc` n/a).
-6. **No \(n\to n\) maps.** Birth and train-time insert are
-   `network_insert_typed(at.in → m)`. Ionosphere is
-   \(34\to 1\to 1\to 1\), not three dense \(34\to 34\) products.
-   There is no tanh / ReLU / Linear-ReLU hidden in a type-nn model.
-7. **And-scale is a dummy Or.** \(A_k=\prod_r \mathrm{Or}_{k,r}^{a_{k,r}}\)
-   is one product per head. `and+` on the board is 0 for every task.
-   Extra clauses are not And-scale.
+The board seed sits well inside the favourable tail on wine and diabetes.
+Whatever the intent, a board tuned while looking at one seed reports that
+seed.
 
-## Consistency of what is left
+**Fix.** `bench.c` trains every cell from `TNN_SEEDS` seeds (default 5)
+and reports mean ± sd. `BOARD.txt` prints a verdict per task: clear only
+if the gap exceeds two standard errors of the difference.
 
-- Dummy rule is the same object on Or, And, and Depth: inject `×1`,
-  train, drop extras that fell back to identity.
-- Dummy Or is born with \(b=1\) and a zero weight on every incoming
-  coordinate. A NULL weight list cannot receive \(\partial L/\partial W\)
-  and And-scaling is dead — that was the board bug.
-- Assembly index `a_{i,r}` is strictly positive on every ln recipe.
-  Each layer's typed product is the generating function
-  \(A = \prod \mathrm{Or}^a\), \(z = \mathrm{sign}(A)\ln(1+|A|/τ)\).
-- Cut thresholds vary with the forward contribution of each factor.
-- Hidden layers run the same back-prop scaling as the tail. Insert
-  may land between any two layers.
+## 2. Fairness of the protocol
 
-## What was dropped
+| issue in the old harness | effect | fix |
+|---|---|---|
+| Inputs standardised, and regression targets min-maxed, on train **and** hold-out rows | hold-out statistics leak into both models | `dataset_standardize_train` / `dataset_minmax_train` fit on training rows only |
+| c-mlp reshuffled every epoch; type-nn trained in fixed order | different optimisation problem per model | one training loop, one shuffle, in `bench.c` |
+| Two harnesses (`bench_type_nn.c`, `bench_cmlp.c`) with copied logic | drift risk: different XOR init seeds, different timing paths | one harness with a model vtable |
+| type-nn `params` skipped weights with \|w\| < 1e-12; a post-training top-k cut each Or to 1+ln(1+fan) weights with no retraining | the "fewer parameters" claim came from a sparse model the spec does not describe | dense model; `params` counts every scalar present |
+| Adam's bias correction shared one global step; parameters born late got a ~3× first step | new structure trained differently from old | one step counter per Or; c-mlp is one group from step 1 |
+| XOR "hold-out" was leave-one-out on 4 points | any model that fits 3 points must mispredict the 4th: hold_acc was 0.000 for both | XOR is fit only; hold-out n/a |
+| type-nn inference allocated linked lists on every forward | timing measured `malloc`, not the model | dense arrays, no allocation in forward |
 
-`winner`, `pulse-wide`, `forge`, `phase`, `signal`, `norm`,
-`assemble`, `compose`, and the old `scale` wrapper were either
-partial ablations or compact controls that refused to scale up then
-down. They were not a faithful type-nn. Their `type_nn_*.c` / `.h`
-are gone. The board is `type-nn` vs `c-mlp` only.
+What was already fair, and is kept: the same split algorithm and seed,
+the same epochs and lr per task, the same Adam constants and learning-rate
+scale, and the same mean-MSE gradient.
 
-## Why type-nn and c-mlp can disagree on MSE vs acc
+## 3. Faithfulness of the old type-nn to its design
 
-MSE is mean squared error on the *readout*, not 0-1 class error.
-A product can sit close to the one-hot targets in L2 and still flip
-an argmax on a hold-out row. That is a real model gap, not a scoring
-bug.
+| design | old implementation | now |
+|---|---|---|
+| $z_k=\operatorname{sign}(A_k)\ln(1+\lvert A_k\rvert)$ | $\ln(1+\lvert A\rvert/\tau_k)$ with a learned $\tau$; "identity" hidden layers skipped the log | exactly the design, on every layer |
+| $A_k=\prod_r \mathrm{Or}_{k,r}^{a_{k,r}}$, index per Or | several Ands (clauses) per head, one index per clause | one And per unit, one index per Or |
+| birth depth $\ln(1+nm)$ | $\lfloor 1+\ln(nm)\rfloor$ | $\operatorname{round}(\ln(1+nm))$ |
+| And scaling | `and+` = 0 on every task; it never fired | fires (2–28 promotions per run on average, by task) |
+| depth scaling between any two layers | `L+` = `L−` = 0 on every task | probe in the loudest gap; fires |
+| no caps or special numbers | type-size cap 1+ln(1+n), max depth 16, fixed prune thresholds 0.004 / 0.03 / 0.05, η/10 on $a$, dataset-tuned 0.30 / 0.70 | none of these; see README, "Constants that remain" |
+| dynamic threshold | fixed constants | $\theta(T)=\eta T^{3/4}$ plus a residual gate |
 
-## Did we beat c-mlp?
+About 6,000 lines of ablation code (dozens of policy bits, global recipe
+state, removed models referenced from comments) were deleted. The board
+models are `type_nn.c/h` (+ `type_nn_scale.c/h`) and `c_mlp.c/h`.
 
-See `BOARD.txt` from this pass (grow u<0.30, drop from 0.70, dummy Or
-born with W=0 so And-scaling can fire without inflating params,
-birth `floor(1+ln(n m))` typed layers of width m, type-size top-k
-after the cut). `and+` is 0 on every task.
+## 4. Consistency
 
-params vs c-mlp:
-- xor          8 < 34
-- wine       156 < 278
-- diabetes    95 < 194
-- wdbc       211 < 514
-- ionosphere 212 < 578
-- iris        85 > 70  (only miss; birth is type-width 3, four live Or promotions)
+- **Shared code.** Both models include `common.h` for the readout $F$,
+  the Adam step and the RNG, so these cannot differ between them.
+- **Gradients.** `test_type_nn` checks $\partial L/\partial x$,
+  $\partial L/\partial b$, $\partial L/\partial a$ and
+  $\partial L/\partial w$ against central differences on random
+  three-layer nets with $a>1$ and mixed signs. The error falls as $h^2$
+  down to about 1e-11. The exact-zero-factor branch is checked
+  separately.
+- **Surgery.** With probe noise 0, a net with probes and the same net
+  without them produce bit-identical outputs. The depth fold is checked
+  to perturb less than a naive insert.
+- **Proofs.** `coqLang/` now builds. The old build failed at
+  `Basic.v:87`: `simpl` rewrote `1 * prod v` into a `match` that `ring`
+  rejects. The development was extended to the forward and backward
+  pass; see `coqLang/README.md`.
+- **Build.** `flake.nix` no longer points at a deleted `lean/` directory
+  or a nonexistent `make type-nn` target. `nix build .#proofs` checks
+  the Coq development.
 
-hold_mse vs c-mlp:
-- iris        type-nn 0.0223 < 0.0335
-- wine        type-nn 0.0116 < 0.0224
-- diabetes    type-nn 0.0351 < 0.0436
-- ionosphere  type-nn 0.0819 < 0.1328
-- xor train MSE is 0 on both (2000 epochs, same protocol)
-- wdbc still behind on hold-out (211 params vs 514; gap is model,
-  not scoring). Hold acc 0.924 vs 0.942.
+## 5. Current result and its limits
 
-Fairness of the comparison is unchanged: same split, seed, epochs,
-lr, Adam, mean-MSE, ln tail, nbytes. Remaining losses are model
-gaps, not scoring.
+On the fixed split, over 5 seeds:
+
+- type-nn has clearly lower hold-out MSE on **diabetes** and
+  **ionosphere**, with 0.17× and 0.52× the parameters of `c-mlp`.
+- iris, wine and wdbc are within noise.
+- type-nn uses more parameters on iris, wine and xor.
+
+Limits a reader should know:
+
+- **One split.** Seeds vary initialisation only. A different 70/30 cut
+  could move the ranking on the small sets (iris hold-out has 45 rows).
+- **Shared task lr and epochs** were inherited from the old board. They
+  were not tuned for either model here, nor tuned fairly for both.
+- **type-nn overfits more.** Its train MSE is roughly 10× below `c-mlp`
+  at similar hold-out error. The prune phase rarely removes promoted
+  structure.
+- **The remaining constants** (schedule thirds, the shared lr scale)
+  are listed in the README. The schedule is the next candidate to make
+  dynamic, after the threshold.
+
+## 6. This iteration: two type-nn models
+
+- **Frozen reference.** The type-nn from sections 3–5 is frozen as
+  `type-nn-overfit` (`type_nn_overfit*.c/h`, symbol prefix `tnno_`). It
+  reproduces its board numbers bit for bit.
+- **New type-nn.** It keeps the architecture and changes only the
+  scaling strategy, to measured BIC evidence; see the README.
+- **Same protocol.** All three models run through the same harness with
+  the same protocol.
+- **Result.** The new type-nn has fewer parameters than `c-mlp` on 5 of
+  6 tasks, with iris the exception. Its hold-out MSE is a clear win on
+  diabetes and ionosphere and within noise on iris, wine and wdbc.
+- **Cost of the evidence rule.** It evaluates the training samples of
+  the epoch (never the hold-out). That is a departure from "decisions
+  read only back-prop quantities", and it is stated in the README.
+- **Coq.** The development moved to Rocq 9 (`From Stdlib`, local
+  replacements for deprecated lemmas). It was verified here on Rocq
+  9.0.0 built from source with its stdlib: every file builds with no
+  warnings, and the axiom check matches the earlier 8.18 run. The
+  reported `make coq` error was the missing Rocq stdlib package, which
+  the flake now provides.

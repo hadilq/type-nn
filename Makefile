@@ -2,45 +2,44 @@ CC      ?= gcc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wformat -I.
 LDFLAGS ?= -lm
 
-.PHONY: all test test-asan demo bench data clean lean lean-clean
+TNN  = type_nn.c type_nn_scale.c
+TNNO = type_nn_overfit.c type_nn_overfit_scale.c
+HDR  = common.h type_nn.h type_nn_scale.h type_nn_overfit.h type_nn_overfit_scale.h c_mlp.h
 
-LN = type_nn_ln.c type_nn_ln.h type_nn_layer.c type_nn_layer.h type_nn_grow.c type_nn_grow.h
+.PHONY: all test test-asan bench data coq clean
 
-# Board models that stay: type-nn. c-mlp lives in bench_alts.
-MODELS = type_nn_model.c
+all: test_type_nn test_type_nn_overfit test_cmlp bench
 
-all: type-nn test_type_nn
+test_type_nn: test_type_nn.c $(TNN) $(HDR)
+	$(CC) $(CFLAGS) -o $@ test_type_nn.c $(TNN) $(LDFLAGS)
 
-type-nn: type_nn.c run.c type_nn.h $(LN) $(MODELS)
-	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
-	    $(MODELS) run.c $(LDFLAGS)
+test_type_nn_overfit: test_type_nn_overfit.c $(TNNO) $(HDR)
+	$(CC) $(CFLAGS) -o $@ test_type_nn_overfit.c $(TNNO) $(LDFLAGS)
 
-test_type_nn: type_nn.c test_type_nn.c type_nn.h $(LN) $(MODELS)
-	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
-	    $(MODELS) test_type_nn.c $(LDFLAGS)
+test_cmlp: test_cmlp.c c_mlp.c $(HDR)
+	$(CC) $(CFLAGS) -o $@ test_cmlp.c c_mlp.c $(LDFLAGS)
 
-bench_type_nn: type_nn.c bench_type_nn.c dataset.c type_nn.h dataset.h $(LN) $(MODELS)
-	$(CC) $(CFLAGS) -o $@ type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
-	    bench_type_nn.c dataset.c $(MODELS) $(LDFLAGS)
+bench: bench.c $(TNN) $(TNNO) c_mlp.c dataset.c dataset.h bench_time.h $(HDR)
+	$(CC) $(CFLAGS) -o $@ bench.c $(TNN) $(TNNO) c_mlp.c dataset.c $(LDFLAGS)
 
-bench_alts: bench_alts.c dataset.c dataset.h type_nn_alt.h type_nn_alt.c type_nn_cmlp.c type_nn_cmlp.h
-	$(CC) $(CFLAGS) -o $@ bench_alts.c dataset.c type_nn_alt.c type_nn_cmlp.c $(LDFLAGS)
-
-test_alts: test_alts.c type_nn_alt.h type_nn_alt.c type_nn_cmlp.c type_nn_cmlp.h
-	$(CC) $(CFLAGS) -o $@ test_alts.c type_nn_alt.c type_nn_cmlp.c $(LDFLAGS)
-
-test: test_type_nn test_alts
+test: test_type_nn test_type_nn_overfit test_cmlp
 	./test_type_nn
-	./test_alts
+	./test_type_nn_overfit
+	./test_cmlp
 
-test-asan: type_nn.c test_type_nn.c type_nn.h $(LN) $(MODELS)
+test-asan: test_type_nn.c test_type_nn_overfit.c test_cmlp.c $(TNN) $(TNNO) c_mlp.c $(HDR)
 	$(CC) -std=c11 -g -O0 -Wall -Wextra -I. -fsanitize=address,undefined \
-	    -o test_type_nn_asan type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
-	    $(MODELS) test_type_nn.c $(LDFLAGS)
+	    -o test_type_nn_asan test_type_nn.c $(TNN) $(LDFLAGS)
+	$(CC) -std=c11 -g -O0 -Wall -Wextra -I. -fsanitize=address,undefined \
+	    -o test_type_nn_overfit_asan test_type_nn_overfit.c $(TNNO) $(LDFLAGS)
+	$(CC) -std=c11 -g -O0 -Wall -Wextra -I. -fsanitize=address,undefined \
+	    -o test_cmlp_asan test_cmlp.c c_mlp.c $(LDFLAGS)
 	./test_type_nn_asan
+	./test_type_nn_overfit_asan
+	./test_cmlp_asan
 
-demo: type-nn
-	./type-nn
+bench-run: bench
+	./bench.sh
 
 data:
 	mkdir -p data
@@ -55,15 +54,10 @@ data:
 	curl -fsSL -o data/ionosphere.data \
 	  https://archive.ics.uci.edu/ml/machine-learning-databases/ionosphere/ionosphere.data
 
-bench: bench_type_nn bench_alts
-	chmod +x bench.sh
-	./bench.sh
+coq:
+	@if command -v coqc >/dev/null 2>&1; then $(MAKE) -C coqLang; \
+	else echo "coqc not on PATH (nix develop provides it)"; exit 1; fi
 
-lean:
-	cd lean && lake build
-
-lean-clean:
-	rm -rf lean/.lake lean/lake-manifest.json
-
-clean: lean-clean
-	rm -f type-nn test_type_nn test_type_nn_asan bench_type_nn bench_alts test_alts
+clean:
+	rm -f test_type_nn test_type_nn_overfit test_cmlp bench bench.jsonl *_asan
+	$(MAKE) -C coqLang clean

@@ -1,2 +1,2 @@
-UCI Iris, Wine, WDBC and NCSU diabetes files used by the bench.
-Fetched by flake.nix (preferred) or `make data`.
+UCI Iris, Wine, WDBC, ionosphere, and NCSU diabetes files used by the bench.
+Fetched by `make data`.

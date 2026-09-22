@@ -22,13 +22,13 @@ int  dataset_load_wdbc(const char *path, Dataset *ds);
 int  dataset_load_diabetes(const char *path, Dataset *ds);
 int  dataset_load_ionosphere(const char *path, Dataset *ds);
 
-void dataset_standardize_inputs(Dataset *ds);
-void dataset_minmax_outputs(Dataset *ds); /* map Y to ~[0,1] for regression */
+/* Statistics from the training rows only; applied to every row. */
+void dataset_standardize_train(Dataset *ds, const size_t *rows, size_t ntr);
+void dataset_minmax_train(Dataset *ds, const size_t *rows, size_t ntr);
 void dataset_free(Dataset *ds);
 
-/* Shared 70/30 hold-out. Same algorithm in bench_torch.py.
-   Seed 34972, xorshift32 Fisher–Yates. Independent of libc rand()
-   and of how many rand() calls weight-init consumed. */
+/* Shared 70/30 hold-out: xorshift32 Fisher–Yates, seed 34972.
+   Independent of libc rand() and of model initialisation. */
 #define DATASET_SPLIT_SEED 34972u
 #define DATASET_TRAIN_NUM  7
 #define DATASET_TRAIN_DEN  10

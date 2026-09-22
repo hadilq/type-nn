@@ -1,5 +1,5 @@
 {
-  description = "type-nn: product-of-affine (AND-OR) nets from Type Mechanics";
+  description = "type-nn: a trainable stack of partition functions (Or / And / depth scaling)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -14,12 +14,6 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
-
-      py = pkgs.python3.withPackages (
-        ps: with ps; [
-          torch
-        ]
-      );
 
       # Pinned public datasets. Hashes are SRI of the exact bytes fetched
       # from these URLs (see README). Re-run `nix flake lock` is not needed
@@ -45,6 +39,14 @@
         hash = "sha256-RtUhhrhOIL5SkYrbk+j7mSazR5X/dQTCQ1CuBhagS70=";
       };
 
+      # Rocq 9 ships its standard library as a separate package. Without it
+      # `From Stdlib Require ...` (and the deprecated `From Coq`) fails with
+      # "Cannot find a physical path bound to logical path List with prefix
+      # Stdlib". Taking both from one coqPackages set keeps versions matched.
+      rocq = pkgs.coqPackages.coq;
+      rocqStdlib = pkgs.coqPackages.stdlib;
+      rocqPath = "${rocqStdlib}/lib/coq/${rocq.coq-version}/user-contrib";
+
       datasets = pkgs.runCommand "type-nn-datasets" { } ''
         mkdir -p $out/share/type-nn
         cp ${iris} $out/share/type-nn/iris.data
@@ -54,11 +56,6 @@
         cp ${ionosphere} $out/share/type-nn/ionosphere.data
       '';
 
-      # Lean 4 for the machine-checked half of the project. No Mathlib: every
-      # proof in ./lean uses only the axioms of a linearly ordered commutative
-      # ring, so bare Lean core is enough and `lake build` takes seconds.
-      lean = pkgs.lean4;
-
       devShell = pkgs.mkShell {
         packages = with pkgs; [
           gcc
@@ -67,34 +64,38 @@
           clang
           pkg-config
           curl
-          py
-          lean
+          python3
+          rocq
         ];
+        # the setup hook finds user-contrib of buildInputs; the explicit
+        # paths are a fallback for shells that do not run it
+        buildInputs = [ rocqStdlib ];
+        COQPATH = rocqPath;
+        ROCQPATH = rocqPath;
         TYPE_NN_DATA = "${datasets}/share/type-nn";
         shellHook = ''
           echo "TYPE_NN_DATA=$TYPE_NN_DATA"
           echo "datasets: iris wine wdbc diabetes ionosphere"
           mkdir -p data
-          cp $TYPE_NN_DATA/*.data data/
-          cp $TYPE_NN_DATA/diabetes.tab.txt data/
-          echo "make bench   -> every model on every dataset"
-          echo "make lean    -> check the proofs in ./lean"
+          cp -f --no-preserve=mode $TYPE_NN_DATA/*.data $TYPE_NN_DATA/diabetes.tab.txt data/
+          echo "make test    -> unit tests, gradient checks"
+          echo "./bench.sh   -> type-nn, type-nn-overfit, c-mlp board (BOARD.txt)"
+          echo "make coq     -> check the proofs in ./coqLang"
         '';
       };
 
-      # `nix build .#proofs` type-checks the whole Lean development. It is
-      # hermetic: no network, no Mathlib cache, no toolchain download.
+      # `nix build .#proofs` type-checks the Coq development. Hermetic.
       proofs = pkgs.stdenv.mkDerivation {
         name = "type-nn-proofs";
-        src = ./lean;
-        nativeBuildInputs = [ lean ];
-        buildPhase = ''
-          export HOME=$TMPDIR
-          lake build
-        '';
+        src = ./coqLang;
+        nativeBuildInputs = [ rocq pkgs.gnumake ];
+        buildInputs = [ rocqStdlib ];
+        COQPATH = rocqPath;
+        ROCQPATH = rocqPath;
+        buildPhase = "make";
         installPhase = ''
           mkdir -p $out
-          cp -R .lake/build $out/ 2>/dev/null || true
+          cp -R TypeNN $out/
           echo "TypeNN proofs check out" > $out/RESULT
         '';
       };
@@ -107,16 +108,19 @@
           pkgs.gnumake
         ];
         buildInputs = [ datasets ];
-        buildPhase = "make type-nn test_type_nn bench_type_nn";
+        buildPhase = "make test_type_nn test_type_nn_overfit test_cmlp bench && ./test_type_nn && ./test_type_nn_overfit && ./test_cmlp";
         installPhase = ''
           mkdir -p $out/bin $out/share/type-nn
-          cp type-nn test_type_nn bench_type_nn $out/bin/
+          cp test_type_nn test_type_nn_overfit test_cmlp bench bench.sh $out/bin/
           cp -R ${datasets}/share/type-nn/. $out/share/type-nn/
         '';
       };
     in
     {
-      packages.${system}.default = package;
+      packages.${system} = {
+        default = package;
+        inherit proofs;
+      };
       devShells.${system}.default = devShell;
       formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-tree;
     };

@@ -64,34 +64,37 @@ static void one_hot(double *row, size_t k, size_t out)
     for (size_t i = 0; i < out; i++) row[i] = (i == k) ? 1.0 : 0.0;
 }
 
-void dataset_standardize_inputs(Dataset *ds)
+/* Standardize X with the mean / std of the training rows only, then
+   apply the same affine map to every row. The hold-out rows never
+   contribute a statistic. */
+void dataset_standardize_train(Dataset *ds, const size_t *rows, size_t ntr)
 {
-    if (!ds || !ds->n || !ds->in) return;
+    if (!ds || !ntr || !ds->in) return;
     for (size_t j = 0; j < ds->in; j++) {
         double mean = 0.0, var = 0.0;
-        for (size_t i = 0; i < ds->n; i++) mean += ds->X[i][j];
-        mean /= (double)ds->n;
-        for (size_t i = 0; i < ds->n; i++) {
-            double d = ds->X[i][j] - mean;
+        for (size_t i = 0; i < ntr; i++) mean += ds->X[rows[i]][j];
+        mean /= (double)ntr;
+        for (size_t i = 0; i < ntr; i++) {
+            double d = ds->X[rows[i]][j] - mean;
             var += d * d;
         }
-        /* torch.std is Bessel-corrected (n-1); match that so wine/iris
-           features are the same numbers torch-mlp sees. */
-        var = sqrt(var / (double)(ds->n > 1 ? ds->n - 1 : 1));
-        if (var < 1e-12) var = 1.0;
+        double sd = sqrt(var / (double)(ntr > 1 ? ntr - 1 : 1));
+        if (sd < 1e-12) sd = 1.0;
         for (size_t i = 0; i < ds->n; i++)
-            ds->X[i][j] = (ds->X[i][j] - mean) / var;
+            ds->X[i][j] = (ds->X[i][j] - mean) / sd;
     }
 }
 
-void dataset_minmax_outputs(Dataset *ds)
+/* Regression targets: min-max from the training rows only. */
+void dataset_minmax_train(Dataset *ds, const size_t *rows, size_t ntr)
 {
-    if (!ds || !ds->n || !ds->out) return;
+    if (!ds || !ntr || !ds->out) return;
     for (size_t j = 0; j < ds->out; j++) {
-        double lo = ds->Y[0][j], hi = ds->Y[0][j];
-        for (size_t i = 1; i < ds->n; i++) {
-            if (ds->Y[i][j] < lo) lo = ds->Y[i][j];
-            if (ds->Y[i][j] > hi) hi = ds->Y[i][j];
+        double lo = ds->Y[rows[0]][j], hi = lo;
+        for (size_t i = 1; i < ntr; i++) {
+            double v = ds->Y[rows[i]][j];
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
         }
         double span = hi - lo;
         if (span < 1e-12) span = 1.0;
@@ -287,7 +290,7 @@ int dataset_load_ionosphere(const char *path, Dataset *ds)
     return n > 0 ? 0 : -1;
 }
 
-/* Portable xorshift32. Must match bench_torch.py:split_perm. */
+/* Portable xorshift32 for the split. */
 unsigned dataset_xorshift32(unsigned *state)
 {
     unsigned x = *state;

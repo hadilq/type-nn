@@ -1,157 +1,84 @@
 #!/usr/bin/env bash
-# Run the type-nn scale/depth board and the c-mlp baseline.
+# Build the harness, run every model on every task, write BOARD.txt.
+#   ./bench.sh [task|all]        TNN_SEEDS=5 by default
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-
-CC="${CC:-gcc}"
-CFLAGS="${CFLAGS:--std=c11 -O2 -Wall -Wextra -I.}"
 TASK="${1:-all}"
-
-if [ -z "${TYPE_NN_DATA:-}" ]; then
-  if [ -d "$ROOT/data" ] && [ -f "$ROOT/data/iris.data" ]; then
-    export TYPE_NN_DATA="$ROOT/data"
-  elif [ -d /tmp/type-nn-data ] && [ -f /tmp/type-nn-data/iris.data ]; then
-    export TYPE_NN_DATA=/tmp/type-nn-data
-  fi
+if [ -z "${TYPE_NN_DATA:-}" ] && [ -f "$ROOT/data/iris.data" ]; then
+  export TYPE_NN_DATA="$ROOT/data"
 fi
+make -s bench
+./bench "$TASK" all | tee bench.jsonl
 
-MODELS="type_nn_model.c"
-
-echo "== building bench_type_nn + bench_alts =="
-$CC $CFLAGS -o /tmp/bench_type_nn type_nn.c type_nn_ln.c type_nn_layer.c type_nn_grow.c \
-    bench_type_nn.c dataset.c $MODELS -lm
-$CC $CFLAGS -o /tmp/bench_alts bench_alts.c dataset.c type_nn_alt.c type_nn_cmlp.c -lm
-
-echo "== type-nn scale + depth  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
-: > /tmp/type_nn_bench.jsonl
-# Faithful board: type-nn (three-axis scale) vs c-mlp.
-for mode in type-nn; do
-  echo "== $mode =="
-  /tmp/bench_type_nn "$TASK" "$mode" | tee -a /tmp/type_nn_bench.jsonl
-done
-
-echo "== c-mlp  TYPE_NN_DATA=${TYPE_NN_DATA:-unset} =="
-/tmp/bench_alts "$TASK" c-mlp | tee /tmp/alt_bench.jsonl
-
-python3 - << 'PY'
-import json, collections, pathlib, re
-rows = []
-for path in ("/tmp/type_nn_bench.jsonl", "/tmp/alt_bench.jsonl"):
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("{"):
-                    # Only token inf/nan, never the letters inside us_per_infer.
-                    line = re.sub(r'(?<=[:\[,\s])-?(?:nan|inf)(?=[,\]}\s])',
-                                  'null', line, flags=re.I)
-                    rows.append(json.loads(line))
-    except FileNotFoundError:
-        pass
-uniq = {}
+python3 - <<'PY'
+import json, math, collections, pathlib
+rows = [json.loads(l) for l in open("bench.jsonl") if l.startswith("{")]
+by = collections.defaultdict(dict)
 for r in rows:
-    uniq[(r.get("impl"), r.get("task"))] = r
-rows = list(uniq.values())
+    by[r["task"]][r["impl"]] = r
+S = rows[0]["seeds"] if rows else 0
 
-hdr = ("task         impl                         hold_mse  params   train_s      mse  hold_acc     acc   nbytes    us/infer"
-       "  or+ or- and+ and-  L0 L+ L-")
-bar = "-" * len(hdr)
-lines = []
-lines.append("type-nn fair hold-out board")
-lines.append("===========================")
-lines.append("")
-lines.append("Split: xorshift32 Fisher-Yates, seed 34972, 70/30. Same cut for every impl.")
-lines.append("Board models: type-nn and c-mlp.")
-lines.append("type-nn is the three-axis recipe (Or width, And dummy-Or, Depth).")
-lines.append("c-mlp is Linear-ReLU-Linear + ln tail.")
-lines.append("L0 = layers at birth. type-nn: floor(1+ln(n m)) product layers.")
-lines.append("c-mlp L0 = 2 (Linear-ReLU-Linear).")
-lines.append("  xor 1 | iris 3 | diabetes 3 | wine 4 | wdbc 4 | ionosphere 4")
-lines.append("or+/or- = dummy Or (×1) promoted / collapsed.")
-lines.append("and+/and- = dummy And (product ≡ 1) promoted / collapsed.")
-lines.append("L+/L- = train-time layer insert / drop (birth is L0, not L+).")
-lines.append("us/infer = mean microseconds per forward over >=200 ms wall (never 0).")
-lines.append("hold_acc is n/a on diabetes (regression) only. XOR prints threshold acc")
-lines.append("on all 4 points (no 70/30 cut exists).")
-lines.append("Sorted by (hold_mse, params, train_s, mse, hold_acc asc, acc asc).")
-lines.append("")
-lines.append(hdr)
-lines.append(bar)
-by = collections.defaultdict(list)
-for r in rows:
-    by[r["task"]].append(r)
-order = ("xor", "iris", "wine", "wdbc", "diabetes", "ionosphere")
-def acc_key(v):
-    if v is None or v < 0:
-        return -1.0
-    return float(v)
-for task in order:
-    block = by.get(task, [])
-    def mse_key(v):
-        if v is None:
-            return 1e300
-        try:
-            x = float(v)
-        except (TypeError, ValueError):
-            return 1e300
-        import math
-        return x if math.isfinite(x) else 1e300
-    def acc_asc(v):
-        if v is None or v < 0:
-            return 1e300
-        return float(v)
-    block.sort(key=lambda r: (
-        mse_key(r.get("hold_mse", r.get("mse"))),
-        r.get("params", 1 << 30),
-        r.get("train_s", 1e300),
-        mse_key(r.get("mse")),
-        acc_asc(r.get("hold_acc", r.get("acc"))),
-        acc_asc(r.get("acc")),
-    ))
-    for r in block:
-        acc = r.get("acc", -1)
-        acc_s = "   n/a" if acc is None or acc < 0 else f"{acc:6.3f}"
-        def fnum(v):
-            if v is None:
-                return "     nan"
-            try:
-                import math
-                if not math.isfinite(float(v)):
-                    return "     nan"
-            except (TypeError, ValueError):
-                return "     nan"
-            return f"{float(v):8.5f}"
-        hm = r.get("hold_mse", r.get("mse", 0))
-        ha = r.get("hold_acc", acc)
-        ha_s = "   n/a" if ha is None or ha < 0 else f"{ha:6.3f}"
-        impl = r['impl']
-        if len(impl) > 28:
-            impl = impl[:28]
-        us = r.get('us_per_infer')
-        if us is None:
-            inf_s = r.get('infer_s') or 0.0
-            inf_n = r.get('infer_n') or 0
-            us = (inf_s * 1e6 / inf_n) if inf_n else 0.0
-        try:
-            us = float(us)
-        except (TypeError, ValueError):
-            us = 0.0
-        if us <= 0.0:
-            us = 1e-6
-        lines.append(
-            f"{r['task']:<12} {impl:<28} {fnum(hm)} {r['params']:7d} "
-            f"{r.get('train_s', 0):8.4f} {fnum(r.get('mse'))} {ha_s} {acc_s} "
-            f"{r['nbytes']:7d} {us:10.6f} "
-            f"{int(r.get('or_add', 0)):4d} {int(r.get('or_drop', 0)):3d} "
-            f"{int(r.get('and_add', 0)):4d} {int(r.get('and_drop', 0)):4d} "
-            f"{int(r.get('init_layers', 1)):3d} "
-            f"{int(r.get('layer_add', 0)):3d} {int(r.get('layer_drop', 0)):3d}")
-    if block:
-        lines.append("")
-text = "\n".join(lines) + "\n"
-print()
-print(text, end="")
+def f(v, w=7, p=4):
+    return f"{'n/a':>{w}}" if v is None else f"{v:{w}.{p}f}"
+
+out = []
+out += ["type-nn, type-nn-overfit vs c-mlp — hold-out board", "=" * 50, "",
+        "Split      one fixed 70/30 cut (xorshift32 Fisher-Yates, seed 34972);",
+        "           standardisation fitted on the training rows only.",
+        f"Seeds      {S} initialisation seeds per cell; every number is the",
+        "           mean over seeds, ± is the standard deviation.",
+        "Protocol   one harness (bench.c) for both models: same shuffle, same",
+        "           per-sample Adam (common.h), same mean-MSE, same epochs/lr,",
+        "           same readout F(u) = sign(u) ln(1+|u|).",
+        "params     every learnable scalar present after training (dense;",
+        "           no weight is skipped for being small).",
+        "L0 -> L    layers at birth -> after training. type-nn births",
+        "           round(ln(1 + n m)) layers.",
+        "or/and/L   type-nn probes promoted (+) and live items pruned (-) on the",
+        "           Or-width, And-degree and depth axes.",
+        "models     type-nn          evidence-driven scaling (BIC on measured MSE)",
+        "           type-nn-overfit  the previous type-nn, frozen",
+        "           c-mlp            Linear-ReLU-Linear baseline",
+        "verdict    each type-nn against c-mlp: hold_mse difference, clear if it",
+        "           exceeds two standard errors, otherwise within noise; and the",
+        "           params ratio.",
+        "xor        fit only: 4 points have no hold-out.", ""]
+hdr = (f"{'task':<11}{'impl':<16}{'hold_mse':>9}{'±':>8}{'hold_acc':>9}{'±':>7}"
+       f"{'train_mse':>10}{'params':>8}{'±':>6}{'train_s':>8}{'us/inf':>8}"
+       f"{'L0->L':>9}{'or+':>6}{'or-':>5}{'and+':>6}{'and-':>5}{'L+':>5}{'L-':>5}")
+out += [hdr, "-" * len(hdr)]
+IMPLS = ("type-nn", "type-nn-overfit", "c-mlp")
+for task in ("xor", "iris", "wine", "wdbc", "diabetes", "ionosphere"):
+    cell = by.get(task, {})
+    for impl in IMPLS:
+        r = cell.get(impl)
+        if not r: continue
+        out.append(
+            f"{task:<11}{impl:<16}{f(r['hold_mse'],9)}{f(r['hold_mse_sd'],8)}"
+            f"{f(r['hold_acc'],9,3)}{f(r['hold_acc_sd'],7,3)}{r['mse']:10.5f}"
+            f"{r['params']:8.1f}{r['params_sd']:6.1f}{r['train_s']:8.3f}"
+            f"{r['us_per_infer']:8.3f}{r['init_layers']:5.0f}->{r['layers']:<3.1f}"
+            f"{r['or_add']:6.1f}{r['or_drop']:5.1f}{r['and_add']:6.1f}"
+            f"{r['and_drop']:5.1f}{r['layer_add']:5.1f}{r['layer_drop']:5.1f}")
+    c = cell.get("c-mlp")
+    for name in ("type-nn", "type-nn-overfit"):
+        t = cell.get(name)
+        if not (t and c):
+            continue
+        pr = t["params"] / c["params"]
+        pw = "fewer" if pr < 1 else "more"
+        if t["hold_mse"] is None:
+            out.append(f"{'':<11}{name}: fit only; params {pr:.2f}x c-mlp ({pw})")
+            continue
+        d = t["hold_mse"] - c["hold_mse"]
+        se = math.sqrt((t["hold_mse_sd"]**2 + c["hold_mse_sd"]**2) / max(S, 1))
+        word = "clear" if abs(d) > 2 * se else "within noise"
+        who = name if d < 0 else "c-mlp"
+        out.append(f"{'':<11}{name}: {who} lower hold_mse by {abs(d):.4f} (2se {2*se:.4f}) -> {word};"
+                   f" params {pr:.2f}x c-mlp ({pw})")
+    out.append("")
+text = "\n".join(out) + "\n"
 pathlib.Path("BOARD.txt").write_text(text)
-print("wrote BOARD.txt")
+print(); print(text, end="")
 PY
