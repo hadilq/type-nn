@@ -1,20 +1,27 @@
 /*
  * bench.c — one harness for every board model.
  *
- * Both models go through the same code path: same split, same
+ * Every model goes through the same code path: same split, same
  * train-only standardisation, same per-epoch shuffle, same mean-MSE
  * gradient (y − t)/m, same epochs and lr, same metrics, same timer.
  * The only difference is the vtable.
  *
- * Each (task, model) is trained from TNN_SEEDS initialisation seeds
- * (default 5) on the one fixed 70/30 split, and the board reports the
- * mean and standard deviation across seeds. A single seed is not a
- * measurement on data sets this small.
+ * Each (task, model) cell is trained on TNN_SPLITS 70/30 splits
+ * (default 1: the fixed split, seed 34972) from TNN_SEEDS initialisation
+ * seeds each (default 5). The JSON line reports the mean and sd over
+ * every (split, seed) run, and the per-split means, so bench.sh can pair
+ * the models split by split.
  *
- *   ./bench [task|all] [type-nn|type-nn-overfit|c-mlp|all]
+ *   ./bench [task|all] [model|all]
+ *   models: type-nn type-nn-overfit c-mlp graph-type-nn c-mlp-matched
+ *
+ * c-mlp-matched is the widest c-mlp whose parameter count does not exceed
+ * graph-type-nn's mean on the same task; it is run right after the graph
+ * (it needs the graph's count, never its hold-out).
  */
 #define _POSIX_C_SOURCE 200809L
 #include "type_nn.h"
+#include "type_nn_graph.h"
 #include "type_nn_overfit.h"
 #include "c_mlp.h"
 #include "common.h"
@@ -28,6 +35,8 @@
 
 /* ── model vtable ──────────────────────────────────────────────────── */
 
+#define N_COUNTERS 12
+
 typedef struct {
     const char *name;
     void         *(*create)(size_t in, size_t out, unsigned seed);
@@ -38,7 +47,9 @@ typedef struct {
     void          (*epoch_end)(void *m);
     void          (*end)(void *m);
     size_t        (*params)(const void *m);
-    void          (*counters)(const void *m, double *c); /* 8 slots */
+    /* init_layers, layers, or+, or-, and+, and-, layer+, layer-,
+       init_edges, edges, edge+, edge- */
+    void          (*counters)(const void *m, double *c);
     void          (*destroy)(void *m);
 } Model;
 
@@ -57,6 +68,8 @@ static void  tn_counters(const void *mm, double *c)
     c[2] = m->or_add;  c[3] = m->or_drop;
     c[4] = m->and_add; c[5] = m->and_drop;
     c[6] = m->layer_add; c[7] = m->layer_drop;
+    /* a chain of D layers has D edges, x -> L0 included */
+    c[8] = (double)m->init_depth; c[9] = (double)m->depth;
 }
 static void  tn_destroy(void *m) { tnn_free(m); }
 
@@ -75,10 +88,17 @@ static void  to_counters(const void *mm, double *c)
     c[2] = m->or_add;  c[3] = m->or_drop;
     c[4] = m->and_add; c[5] = m->and_drop;
     c[6] = m->layer_add; c[7] = m->layer_drop;
+    c[8] = (double)m->init_depth; c[9] = (double)m->depth;
 }
 static void  to_destroy(void *m) { tnno_free(m); }
 
+static size_t matched_hidden = 0;   /* set after the graph cell of a task */
+
 static void *cm_create(size_t in, size_t out, unsigned s) { return cmlp_create(in, out, s); }
+static void *cmm_create(size_t in, size_t out, unsigned s)
+{
+    return cmlp_create_hidden(in, out, matched_hidden ? matched_hidden : 1, s);
+}
 static void  cm_begin(void *m, size_t n, size_t e, double lr) { cmlp_begin(m, n, e, lr); }
 static void  cm_training(void *m, int on) { (void)m; (void)on; }
 static const double *cm_forward(void *m, const double *x) { return cmlp_forward(m, x); }
@@ -88,10 +108,31 @@ static size_t cm_params(const void *m) { return cmlp_params(m); }
 static void  cm_counters(const void *m, double *c)
 {
     (void)m;
-    memset(c, 0, 8 * sizeof(double));
+    memset(c, 0, N_COUNTERS * sizeof(double));
     c[0] = c[1] = 2.0;
+    c[8] = c[9] = 2.0;
 }
 static void  cm_destroy(void *m) { cmlp_free(m); }
+
+static void *gg_create(size_t in, size_t out, unsigned s) { return tnng_create(in, out, s); }
+static void  gg_begin(void *m, size_t n, size_t e, double lr) { tnng_begin(m, n, e, lr); }
+static void  gg_training(void *m, int on) { ((TypeNNGraph *)m)->training = on; }
+static const double *gg_forward(void *m, const double *x) { return tnng_forward(m, x); }
+static void  gg_backward(void *m, const double *dy) { tnng_backward(m, dy); }
+static void  gg_epoch(void *m) { tnng_epoch_end(m); }
+static void  gg_end(void *m) { tnng_end(m); }
+static size_t gg_params(const void *m) { return tnng_params(m); }
+static void  gg_counters(const void *m, double *c)
+{
+    const TypeNNGraph *g = m;
+    c[0] = (double)g->birth_vertices; c[1] = (double)g->n_nodes;
+    c[2] = g->or_add;   c[3] = g->or_drop;
+    c[4] = g->and_add;  c[5] = g->and_drop;
+    c[6] = g->node_add; c[7] = g->node_drop;
+    c[8] = (double)g->birth_edges; c[9] = (double)g->n_edges;
+    c[10] = g->edge_add; c[11] = g->edge_drop;
+}
+static void  gg_destroy(void *m) { tnng_free(m); }
 
 static const Model MODELS[] = {
     { "type-nn", tn_create, tn_begin, tn_training, tn_forward, tn_backward,
@@ -99,6 +140,10 @@ static const Model MODELS[] = {
     { "type-nn-overfit", to_create, to_begin, to_training, to_forward, to_backward,
       to_epoch, to_end, to_params, to_counters, to_destroy },
     { "c-mlp", cm_create, cm_begin, cm_training, cm_forward, cm_backward,
+      cm_noop, cm_noop, cm_params, cm_counters, cm_destroy },
+    { "graph-type-nn", gg_create, gg_begin, gg_training, gg_forward, gg_backward,
+      gg_epoch, gg_end, gg_params, gg_counters, gg_destroy },
+    { "c-mlp-matched", cmm_create, cm_begin, cm_training, cm_forward, cm_backward,
       cm_noop, cm_noop, cm_params, cm_counters, cm_destroy },
 };
 #define N_MODELS (sizeof(MODELS) / sizeof(MODELS[0]))
@@ -182,7 +227,7 @@ static double time_infer(const Model *md, void *m, double **X, size_t n)
     return dt * 1e6 / (double)done;
 }
 
-/* ── statistics over seeds ─────────────────────────────────────────── */
+/* ── statistics ────────────────────────────────────────────────────── */
 
 typedef struct { double s, ss; size_t n; } Acc;
 static void acc_add(Acc *a, double v) { a->s += v; a->ss += v * v; a->n++; }
@@ -195,12 +240,20 @@ static double acc_sd(const Acc *a)
     return v > 0.0 ? sqrt(v) : 0.0;
 }
 
-static size_t n_seeds(void)
+static size_t env_count(const char *name, long dflt, long max)
 {
-    const char *e = getenv("TNN_SEEDS");
-    long v = e ? atol(e) : 5;
-    return v < 1 ? 1 : (size_t)v;
+    const char *e = getenv(name);
+    long v = e ? atol(e) : dflt;
+    if (v < 1) v = 1;
+    if (v > max) v = max;
+    return (size_t)v;
 }
+static size_t n_seeds(void)  { return env_count("TNN_SEEDS", 5, 1000); }
+#define MAX_SPLITS 64
+static size_t n_splits(void) { return env_count("TNN_SPLITS", 1, MAX_SPLITS); }
+
+/* split 0 is the historical fixed split */
+static unsigned split_seed(size_t s) { return DATASET_SPLIT_SEED + 104729u * (unsigned)s; }
 
 static void jnum(const char *key, double v, int last)
 {
@@ -208,53 +261,76 @@ static void jnum(const char *key, double v, int last)
     else printf("\"%s\":null%s", key, last ? "" : ",");
 }
 
-/* One (task, model) cell: train from every seed, print one JSON line. */
-static void run_cell(const Model *md, const char *task,
-                     double **Xtr, double **Ytr, size_t ntr,
-                     double **Xte, double **Yte, size_t nte,
-                     size_t in, size_t out, int classify,
-                     size_t epochs, double lr)
+typedef struct {
+    Acc hm, ha, tm, ta, pa, ts;
+    Acc cnt[N_COUNTERS];
+    double split_hold[MAX_SPLITS], split_params[MAX_SPLITS];
+    size_t n_split;
+    double us;
+} Cell;
+
+/* One split of one cell: train from every seed. */
+static void run_split(const Model *md, Cell *cell, const char *task,
+                      double **Xtr, double **Ytr, size_t ntr,
+                      double **Xte, double **Yte, size_t nte,
+                      size_t in, size_t out, int classify,
+                      size_t epochs, double lr, int last_split)
 {
-    Acc hm = {0}, ha = {0}, tm = {0}, ta = {0}, pa = {0}, ts = {0};
-    Acc cnt[8];
-    memset(cnt, 0, sizeof(cnt));
-    double us = NAN;
+    Acc sh = {0}, sp = {0};
     size_t S = n_seeds();
     for (size_t s = 0; s < S; s++) {
         unsigned seed = DATASET_SPLIT_SEED + 7919u * (unsigned)(s + 1);
         void *m = md->create(in, out, seed);
         double t0 = bench_wall_s();
         train(md, m, Xtr, Ytr, ntr, out, epochs, lr);
-        acc_add(&ts, bench_wall_s() - t0);
-        acc_add(&tm, eval_mse(md, m, Xtr, Ytr, ntr, out));
-        if (classify) acc_add(&ta, eval_acc(md, m, Xtr, Ytr, ntr, out));
+        acc_add(&cell->ts, bench_wall_s() - t0);
+        acc_add(&cell->tm, eval_mse(md, m, Xtr, Ytr, ntr, out));
+        if (classify) acc_add(&cell->ta, eval_acc(md, m, Xtr, Ytr, ntr, out));
+        double hold = NAN;
         if (nte) {
-            acc_add(&hm, eval_mse(md, m, Xte, Yte, nte, out));
-            if (classify) acc_add(&ha, eval_acc(md, m, Xte, Yte, nte, out));
+            hold = eval_mse(md, m, Xte, Yte, nte, out);
+            acc_add(&cell->hm, hold);
+            acc_add(&sh, hold);
+            if (classify) acc_add(&cell->ha, eval_acc(md, m, Xte, Yte, nte, out));
         }
-        acc_add(&pa, (double)md->params(m));
-        double c[8];
+        acc_add(&cell->pa, (double)md->params(m));
+        acc_add(&sp, (double)md->params(m));
+        double c[N_COUNTERS];
+        memset(c, 0, sizeof(c));
         md->counters(m, c);
-        for (int i = 0; i < 8; i++) acc_add(&cnt[i], c[i]);
+        for (int i = 0; i < N_COUNTERS; i++) acc_add(&cell->cnt[i], c[i]);
         if (getenv("TNN_VERBOSE"))
-            fprintf(stderr, "  %s %s seed %zu: hold_mse %.5f train_mse %.2e params %zu"
-                    " layers %g\n", task, md->name, s,
-                    nte ? eval_mse(md, m, Xte, Yte, nte, out) : NAN,
-                    eval_mse(md, m, Xtr, Ytr, ntr, out), md->params(m), c[1]);
-        if (s + 1 == S) us = time_infer(md, m, Xtr, ntr);
+            fprintf(stderr, "  %s %s split %zu seed %zu: hold_mse %.5f train_mse %.2e params %zu"
+                    " layers %g edges %g\n", task, md->name, cell->n_split, s, hold,
+                    eval_mse(md, m, Xtr, Ytr, ntr, out), md->params(m), c[1], c[9]);
+        if (last_split && s + 1 == S) cell->us = time_infer(md, m, Xtr, ntr);
         md->destroy(m);
     }
-    printf("{\"impl\":\"%s\",\"task\":\"%s\",\"seeds\":%zu,\"epochs\":%zu,\"lr\":%g,",
-           md->name, task, S, epochs, lr);
-    jnum("hold_mse", acc_mean(&hm), 0); jnum("hold_mse_sd", acc_sd(&hm), 0);
-    jnum("hold_acc", acc_mean(&ha), 0); jnum("hold_acc_sd", acc_sd(&ha), 0);
-    jnum("mse", acc_mean(&tm), 0);      jnum("acc", acc_mean(&ta), 0);
-    jnum("params", acc_mean(&pa), 0);   jnum("params_sd", acc_sd(&pa), 0);
-    jnum("train_s", acc_mean(&ts), 0);  jnum("us_per_infer", us, 0);
-    static const char *k[8] = { "init_layers", "layers", "or_add", "or_drop",
-                                "and_add", "and_drop", "layer_add", "layer_drop" };
-    for (int i = 0; i < 8; i++) jnum(k[i], acc_mean(&cnt[i]), i == 7);
-    printf("}\n");
+    cell->split_hold[cell->n_split] = acc_mean(&sh);
+    cell->split_params[cell->n_split] = acc_mean(&sp);
+    cell->n_split++;
+}
+
+static void print_cell(const Model *md, const Cell *c, const char *task,
+                       size_t epochs, double lr)
+{
+    printf("{\"impl\":\"%s\",\"task\":\"%s\",\"seeds\":%zu,\"splits\":%zu,\"epochs\":%zu,\"lr\":%g,",
+           md->name, task, n_seeds(), c->n_split, epochs, lr);
+    jnum("hold_mse", acc_mean(&c->hm), 0); jnum("hold_mse_sd", acc_sd(&c->hm), 0);
+    jnum("hold_acc", acc_mean(&c->ha), 0); jnum("hold_acc_sd", acc_sd(&c->ha), 0);
+    jnum("mse", acc_mean(&c->tm), 0);      jnum("acc", acc_mean(&c->ta), 0);
+    jnum("params", acc_mean(&c->pa), 0);   jnum("params_sd", acc_sd(&c->pa), 0);
+    jnum("train_s", acc_mean(&c->ts), 0);  jnum("us_per_infer", c->us, 0);
+    static const char *k[N_COUNTERS] = {
+        "init_layers", "layers", "or_add", "or_drop", "and_add", "and_drop",
+        "layer_add", "layer_drop", "init_edges", "edges", "edge_add", "edge_drop" };
+    for (int i = 0; i < N_COUNTERS; i++) jnum(k[i], acc_mean(&c->cnt[i]), 0);
+    printf("\"hold_mse_splits\":[");
+    for (size_t s = 0; s < c->n_split; s++)
+        printf(isfinite(c->split_hold[s]) ? "%s%.8g" : "%snull", s ? "," : "", c->split_hold[s]);
+    printf("],\"params_splits\":[");
+    for (size_t s = 0; s < c->n_split; s++) printf("%s%.8g", s ? "," : "", c->split_params[s]);
+    printf("]}\n");
     fflush(stdout);
 }
 
@@ -265,6 +341,14 @@ static int want(const char *sel, const char *name)
     return !strcmp(sel, "all") || !strcmp(sel, name);
 }
 
+static void set_matched(const Cell *graph_cell, size_t in, size_t out)
+{
+    double P = acc_mean(&graph_cell->pa);
+    /* params(H) = H (in + 1) + out (H + 1) <= P */
+    double H = floor((P - (double)out) / (double)(in + 1 + out));
+    matched_hidden = H < 1.0 ? 1 : (size_t)H;
+}
+
 /* XOR has no hold-out (4 points; leaving one out asks the model to
    predict the opposite of what the other three imply). Fit only. */
 static void bench_xor(const char *msel)
@@ -273,59 +357,122 @@ static void bench_xor(const char *msel)
     static double Yd[4][1] = {{0},{1},{1},{0}};
     double *X[4], *Y[4];
     for (int i = 0; i < 4; i++) { X[i] = Xd[i]; Y[i] = Yd[i]; }
-    for (size_t i = 0; i < N_MODELS; i++)
-        if (want(msel, MODELS[i].name))
-            run_cell(&MODELS[i], "xor", X, Y, 4, NULL, NULL, 0, 2, 1, 1, 2000, 0.08);
+    for (size_t i = 0; i < N_MODELS; i++) {
+        if (!want(msel, MODELS[i].name)) continue;
+        if (!strcmp(MODELS[i].name, "c-mlp-matched") && !matched_hidden) continue;
+        Cell c;
+        memset(&c, 0, sizeof c);
+        run_split(&MODELS[i], &c, "xor", X, Y, 4, NULL, NULL, 0, 2, 1, 1, 2000, 0.08, 1);
+        print_cell(&MODELS[i], &c, "xor", 2000, 0.08);
+        if (!strcmp(MODELS[i].name, "graph-type-nn")) set_matched(&c, 2, 1);
+    }
+    matched_hidden = 0;
 }
 
-static void bench_real(const char *msel, const char *task, const char *file,
+typedef struct {
+    Dataset ds;
+    double **Xtr, **Ytr, **Xte, **Yte;
+    size_t ntr, nte;
+} Split;
+
+static int load_split(const char *file, int (*loader)(const char *, Dataset *),
+                      unsigned sseed, Split *sp)
+{
+    memset(sp, 0, sizeof *sp);
+    if (loader) {
+        char *path = dataset_find(file);
+        int bad = !path || loader(path, &sp->ds) != 0 || sp->ds.n == 0;
+        free(path);
+        if (bad) return -1;
+    } else if (dataset_make_synth(&sp->ds, 4000, 42) != 0) {
+        return -1;
+    }
+    Dataset *ds = &sp->ds;
+    size_t *perm = (size_t *)malloc(ds->n * sizeof(size_t));
+    dataset_perm(ds->n, sseed, perm);
+    sp->ntr = dataset_ntrain(ds->n);
+    sp->nte = ds->n - sp->ntr;
+    dataset_standardize_train(ds, perm, sp->ntr);
+    if (!ds->classification) dataset_minmax_train(ds, perm, sp->ntr);
+    sp->Xtr = malloc(sp->ntr * sizeof(double *)); sp->Ytr = malloc(sp->ntr * sizeof(double *));
+    sp->Xte = malloc((sp->nte ? sp->nte : 1) * sizeof(double *));
+    sp->Yte = malloc((sp->nte ? sp->nte : 1) * sizeof(double *));
+    for (size_t i = 0; i < sp->ntr; i++) { sp->Xtr[i] = ds->X[perm[i]]; sp->Ytr[i] = ds->Y[perm[i]]; }
+    for (size_t i = 0; i < sp->nte; i++) { sp->Xte[i] = ds->X[perm[sp->ntr + i]]; sp->Yte[i] = ds->Y[perm[sp->ntr + i]]; }
+    free(perm);
+    return 0;
+}
+
+static void free_split(Split *sp)
+{
+    free(sp->Xtr); free(sp->Ytr); free(sp->Xte); free(sp->Yte);
+    dataset_free(&sp->ds);
+}
+
+static void bench_task(const char *msel, const char *task, const char *file,
                        int (*loader)(const char *, Dataset *),
                        size_t epochs, double lr)
 {
-    char *path = dataset_find(file);
-    Dataset ds;
-    if (!path || loader(path, &ds) != 0 || ds.n == 0) {
-        fprintf(stderr, "skip %s: %s not found (set TYPE_NN_DATA or make data)\n",
-                task, file);
-        free(path);
+    Split probe;
+    if (load_split(file, loader, split_seed(0), &probe) != 0) {
+        fprintf(stderr, "skip %s: %s not found (set TYPE_NN_DATA or make data)\n", task, file);
         return;
     }
-    size_t *perm = (size_t *)malloc(ds.n * sizeof(size_t));
-    dataset_perm(ds.n, DATASET_SPLIT_SEED, perm);
-    size_t ntr = dataset_ntrain(ds.n), nte = ds.n - ntr;
-    dataset_standardize_train(&ds, perm, ntr);
-    if (!ds.classification) dataset_minmax_train(&ds, perm, ntr);
-
-    double **Xtr = malloc(ntr * sizeof(double *)), **Ytr = malloc(ntr * sizeof(double *));
-    double **Xte = malloc((nte ? nte : 1) * sizeof(double *));
-    double **Yte = malloc((nte ? nte : 1) * sizeof(double *));
-    for (size_t i = 0; i < ntr; i++) { Xtr[i] = ds.X[perm[i]]; Ytr[i] = ds.Y[perm[i]]; }
-    for (size_t i = 0; i < nte; i++) { Xte[i] = ds.X[perm[ntr + i]]; Yte[i] = ds.Y[perm[ntr + i]]; }
-
-    for (size_t i = 0; i < N_MODELS; i++)
-        if (want(msel, MODELS[i].name))
-            run_cell(&MODELS[i], task, Xtr, Ytr, ntr, Xte, Yte, nte,
-                     ds.in, ds.out, ds.classification, epochs, lr);
-
-    free(Xtr); free(Ytr); free(Xte); free(Yte); free(perm);
-    dataset_free(&ds);
-    free(path);
+    size_t in = probe.ds.in, out = probe.ds.out;
+    int classify = probe.ds.classification;
+    free_split(&probe);
+    size_t P = n_splits();
+    for (size_t i = 0; i < N_MODELS; i++) {
+        if (!want(msel, MODELS[i].name)) continue;
+        if (!strcmp(MODELS[i].name, "c-mlp-matched") && !matched_hidden) {
+            fprintf(stderr, "skip %s c-mlp-matched: needs graph-type-nn in the same run\n", task);
+            continue;
+        }
+        Cell c;
+        memset(&c, 0, sizeof c);
+        for (size_t s = 0; s < P; s++) {
+            Split sp;
+            if (load_split(file, loader, split_seed(s), &sp) != 0) break;
+            run_split(&MODELS[i], &c, task, sp.Xtr, sp.Ytr, sp.ntr, sp.Xte, sp.Yte, sp.nte,
+                      in, out, classify, epochs, lr, s + 1 == P);
+            free_split(&sp);
+        }
+        print_cell(&MODELS[i], &c, task, epochs, lr);
+        if (!strcmp(MODELS[i].name, "graph-type-nn")) set_matched(&c, in, out);
+    }
+    matched_hidden = 0;
 }
 
 int main(int argc, char **argv)
 {
     const char *task = argc > 1 ? argv[1] : "all";
     const char *msel = argc > 2 ? argv[2] : "all";
+    if (!strcmp(msel, "c-mlp-matched")) {
+        fprintf(stderr, "c-mlp-matched needs graph-type-nn in the same run; use 'all'\n");
+        return 1;
+    }
     if (want(task, "xor")) bench_xor(msel);
     if (want(task, "iris"))
-        bench_real(msel, "iris", "iris.data", dataset_load_iris, 250, 0.05);
+        bench_task(msel, "iris", "iris.data", dataset_load_iris, 250, 0.05);
     if (want(task, "wine"))
-        bench_real(msel, "wine", "wine.data", dataset_load_wine, 200, 0.03);
+        bench_task(msel, "wine", "wine.data", dataset_load_wine, 200, 0.03);
     if (want(task, "wdbc"))
-        bench_real(msel, "wdbc", "wdbc.data", dataset_load_wdbc, 80, 0.02);
+        bench_task(msel, "wdbc", "wdbc.data", dataset_load_wdbc, 80, 0.02);
     if (want(task, "diabetes"))
-        bench_real(msel, "diabetes", "diabetes.tab.txt", dataset_load_diabetes, 150, 0.02);
+        bench_task(msel, "diabetes", "diabetes.tab.txt", dataset_load_diabetes, 150, 0.02);
     if (want(task, "ionosphere"))
-        bench_real(msel, "ionosphere", "ionosphere.data", dataset_load_ionosphere, 120, 0.02);
+        bench_task(msel, "ionosphere", "ionosphere.data", dataset_load_ionosphere, 120, 0.02);
+    if (want(task, "spambase"))
+        bench_task(msel, "spambase", "spambase.data", dataset_load_spambase, 40, 0.01);
+    if (want(task, "synth"))       /* generated: 4000 samples, sparse interactions */
+        bench_task(msel, "synth", NULL, NULL, 60, 0.02);
+    if (want(task, "mnist"))
+        bench_task(msel, "mnist", "mnist_subset.bin", dataset_load_bin, 15, 0.01);
+    if (want(task, "mnist_large"))
+        bench_task(msel, "mnist_large", "mnist_large.bin", dataset_load_bin, 8, 0.008);
+    if (want(task, "video"))
+        bench_task(msel, "video", "video_frames.bin", dataset_load_bin, 20, 0.01);
+    if (want(task, "video_large"))
+        bench_task(msel, "video_large", "video_large.bin", dataset_load_bin, 10, 0.008);
     return 0;
 }

@@ -20,6 +20,9 @@
 typedef struct CMlp CMlp;
 
 CMlp         *cmlp_create(size_t in, size_t out, unsigned seed);
+/* The same baseline with a given hidden width (c-mlp-matched on the
+   board: the widest MLP whose params do not exceed graph-type-nn's). */
+CMlp         *cmlp_create_hidden(size_t in, size_t out, size_t hid, unsigned seed);
 void          cmlp_free(CMlp *m);
 void          cmlp_begin(CMlp *m, size_t n_train, size_t epochs, double lr);
 const double *cmlp_forward(CMlp *m, const double *x);

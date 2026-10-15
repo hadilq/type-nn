@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-label="graph-type-nn: the layers become nodes of a DAG with slime-mould edge weights and one dummy rule">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7ee0a3"/></marker>
+    <marker id="o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f0a05a"/></marker>
+    <marker id="p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7a8c"/></marker>
+    <style>
+      .t  { font-family: ui-sans-serif, system-ui, sans-serif; fill: #e8edf4; }
+      .d  { font-family: ui-sans-serif, system-ui, sans-serif; fill: #8b98a8; font-size: 14px; }
+      .m  { font-family: ui-serif, Georgia, serif; fill: #e8edf4; }
+      .h  { font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 700; letter-spacing: 2px; }
+      .box { fill: #1a232e; stroke: #3d8f6a; }
+      .obox { fill: #1a232e; stroke: #b0703a; }
+      .pbox { fill: #141b24; stroke: #6b7a8c; stroke-dasharray: 6 4; }
+      .node { fill: #1f5b40; stroke: #7ee0a3; stroke-width: 2; }
+      .xnode { fill: #161e28; stroke: #7ee0a3; stroke-width: 2; }
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="#0b0f14"/>
+  <rect x="30" y="30" width="1540" height="940" rx="18" fill="#121820" stroke="#2a3544"/>
+  <text x="64" y="84" class="h" fill="#7ee0a3" font-size="24">GRAPH-TYPE-NN</text>
+  <text x="330" y="84" class="d" font-size="16">the layers become the nodes of a DAG · every node is the type-nn unit · the chain is the path graph</text>
+
+  <!-- BIRTH / TOPOLOGY -->
+  <text x="64" y="140" class="h" fill="#7ee0a3" font-size="20">BIRTH · SMALL WORLD</text>
+  <circle cx="110" cy="250" r="30" class="xnode"/>
+  <text x="110" y="258" text-anchor="middle" class="m" font-size="22">x</text>
+  <circle cx="250" cy="250" r="30" class="node"/>
+  <text x="250" y="257" text-anchor="middle" class="m" font-size="18">v₀</text>
+  <circle cx="390" cy="250" r="30" class="node"/>
+  <text x="390" y="257" text-anchor="middle" class="m" font-size="18">v₁</text>
+  <circle cx="530" cy="250" r="30" class="node"/>
+  <text x="530" y="257" text-anchor="middle" class="m" font-size="18">v₂</text>
+  <circle cx="670" cy="250" r="30" class="node"/>
+  <text x="670" y="257" text-anchor="middle" class="m" font-size="18">v₃</text>
+  <line x1="142" y1="250" x2="216" y2="250" stroke="#7ee0a3" stroke-width="2" marker-end="url(#g)"/>
+  <line x1="282" y1="250" x2="356" y2="250" stroke="#7ee0a3" stroke-width="2" marker-end="url(#g)"/>
+  <line x1="422" y1="250" x2="496" y2="250" stroke="#7ee0a3" stroke-width="2" marker-end="url(#g)"/>
+  <line x1="562" y1="250" x2="636" y2="250" stroke="#7ee0a3" stroke-width="2" marker-end="url(#g)"/>
+  <path d="M 262 222 Q 390 150 518 222" fill="none" stroke="#6b7a8c" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#p)"/>
+  <path d="M 402 278 Q 530 350 658 278" fill="none" stroke="#6b7a8c" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#p)"/>
+  <text x="390" y="170" text-anchor="middle" class="d">dummy shortcut (zero columns)</text>
+  <text x="530" y="348" text-anchor="middle" class="d">dummy shortcut</text>
+  <text x="670" y="306" text-anchor="middle" class="d">readout</text>
+  <text x="64" y="388" class="d">round(ln(1+n·m)) nodes, widths n → m → … → m (as dense as the chain);</text>
+  <text x="64" y="408" class="d">backbone live, shortcuts i → i+h (h = 2…⌈ln D⌉, rewired w.p. 1/D) born as dummies,</text>
+  <text x="64" y="428" class="d">so at birth the graph computes exactly the chain's function. Only the first layer reads x.</text>
+
+  <!-- EDGE WEIGHTS -->
+  <text x="780" y="140" class="h" fill="#f0a05a" font-size="20">EDGE WEIGHTS · SLIME MOULD</text>
+  <rect x="780" y="160" width="760" height="190" rx="10" class="obox"/>
+  <text x="810" y="200" class="m" font-size="20">x_v[j] = cₑ · z_u[k],   cₑ = in_wₑ · out_wₑ</text>
+  <text x="810" y="240" class="m" font-size="18">in_wₑ = Iₑ / Σ over v's in-edges</text>
+  <text x="1130" y="240" class="d">I: inference feedback, mean |value entering e|, per x</text>
+  <text x="810" y="272" class="m" font-size="18">out_wₑ = Bₑ / Σ over u's out-edges</text>
+  <text x="1130" y="272" class="d">B: back-prop feedback, mean |∂L/∂z| at e's end, per y</text>
+  <text x="810" y="306" class="d">both accumulated over the edge's lifetime · each node's in-weights sum to 1, and so do its out-weights</text>
+  <text x="810" y="330" class="d">re-estimated each epoch; the destination absorbs w' = w·c/c', Adam steps by lr/c: the function never moves</text>
+  <text x="780" y="380" class="d">The weights are the slime mould's measure for dropping edges: late in training, edges are tried thinnest first.</text>
+  <text x="780" y="402" class="d">The negative feedback acts through the out-weights; there is no veto.</text>
+
+  <!-- MERGE / BRANCH -->
+  <text x="64" y="490" class="h" fill="#7ee0a3" font-size="20">MERGING AND BRANCHING NODES</text>
+  <rect x="64" y="510" width="340" height="170" rx="10" class="box"/>
+  <text x="234" y="540" text-anchor="middle" class="t" font-size="13" font-weight="700">MERGE · two inferences into one node</text>
+  <text x="234" y="580" text-anchor="middle" class="m" font-size="18">Or = w·x_old + 0·z_u + b</text>
+  <text x="234" y="615" text-anchor="middle" class="d">the Or dummy rule, one set of</text>
+  <text x="234" y="635" text-anchor="middle" class="d">dummy weights per incoming source;</text>
+  <text x="234" y="655" text-anchor="middle" class="d">source = largest inference feedback</text>
+  <rect x="424" y="510" width="340" height="170" rx="10" class="box"/>
+  <text x="594" y="540" text-anchor="middle" class="t" font-size="13" font-weight="700">BRANCH · different outputs, different nodes</text>
+  <text x="594" y="580" text-anchor="middle" class="m" font-size="18">z_u[1] → v,   z_u[2] → w</text>
+  <text x="594" y="615" text-anchor="middle" class="d">a new output is read by every out-edge</text>
+  <text x="594" y="635" text-anchor="middle" class="d">through zero columns; late pruning drops</text>
+  <text x="594" y="655" text-anchor="middle" class="d">the (edge, output) pairs that do not pay</text>
+
+  <!-- DUMMY RULE ON THE GRAPH -->
+  <text x="780" y="490" class="h" fill="#7ee0a3" font-size="20">ONE DUMMY RULE · FOUR AXES</text>
+  <rect x="780" y="510" width="760" height="230" rx="10" class="pbox"/>
+  <text x="800" y="540" class="d">promote: moved past θ = lr·age^¾  AND  BIC pays (n ln MSE_without/MSE_with &gt; k ln n)</text>
+  <text x="800" y="578" class="t" font-size="15" font-weight="700">And</text>
+  <text x="900" y="578" class="d">one noisy identity Or per unit (w ≈ 0, b ≈ 1)</text>
+  <text x="800" y="612" class="t" font-size="15" font-weight="700">Or</text>
+  <text x="900" y="612" class="d">a trained new output of a node; every reader meets it with zero columns</text>
+  <text x="800" y="646" class="t" font-size="15" font-weight="700">Merge</text>
+  <text x="900" y="646" class="d">a dummy edge u → v: zero block on v; one per destination; moves to a stronger source</text>
+  <text x="800" y="680" class="t" font-size="15" font-weight="700">Depth</text>
+  <text x="900" y="680" class="d">an identity node on the edge with the largest junction gradient, consumer folded;</text>
+  <text x="900" y="702" class="d">near-exact only: the node emits F(x) = sign(x)ln(1+|x|), not x, and the fold</text>
+  <text x="900" y="724" class="d">removes the affine part (the probe noise is ~0.3 % of the residual)</text>
+
+  <!-- SCHEDULE -->
+  <text x="64" y="770" class="h" fill="#7ee0a3" font-size="20">SCHEDULE</text>
+  <rect x="64" y="790" width="460" height="40" rx="6" fill="#1f5b40"/>
+  <rect x="524" y="790" width="460" height="40" rx="6" fill="#161e28" stroke="#2a3544"/>
+  <rect x="984" y="790" width="460" height="40" rx="6" fill="#6a3f1f"/>
+  <text x="294" y="816" text-anchor="middle" class="t" font-size="15">grow (while residual &gt; Var(t)/N): depth, Or, merge, And</text>
+  <text x="754" y="816" text-anchor="middle" class="t" font-size="15">fit</text>
+  <text x="1214" y="816" text-anchor="middle" class="t" font-size="15">prune: depth, edges thinnest first, joint pool</text>
+  <text x="64" y="852" class="d">0</text><text x="520" y="852" class="d">⅓</text><text x="980" y="852" class="d">⅔</text><text x="1438" y="852" class="d">1</text>
+
+  <!-- RESULT -->
+  <text x="64" y="900" class="d" font-size="15">Board, 1 split × 5 seeds, 12 tasks: hold-out not clearly worse than type-nn with fewer parameters on 8 / 12 (clearly worse only on video, by 1e-4).</text>
+  <text x="64" y="924" class="d" font-size="15">5 splits × 5 seeds, 7 tasks: never clearly worse than type-nn; clearly better on ionosphere and synth; fewer parameters on 5 / 7.</text>
+  <text x="64" y="948" class="d" font-size="15">Coq: path_graph_is_chain, gain_absorb_exact, merge_zero_block_exact, branch_exact, vertex_fold_exact.</text>
+</svg>

@@ -21,6 +21,10 @@ int  dataset_load_wine(const char *path, Dataset *ds);
 int  dataset_load_wdbc(const char *path, Dataset *ds);
 int  dataset_load_diabetes(const char *path, Dataset *ds);
 int  dataset_load_ionosphere(const char *path, Dataset *ds);
+int  dataset_load_spambase(const char *path, Dataset *ds);
+int  dataset_load_bin(const char *path, Dataset *ds); /* generic float32 bin: n,in,out header */
+/* Synthetic larger set: 4000 samples, 16 features, 2-class with sparse interactions. */
+int  dataset_make_synth(Dataset *ds, size_t n, unsigned seed);
 
 /* Statistics from the training rows only; applied to every row. */
 void dataset_standardize_train(Dataset *ds, const size_t *rows, size_t ntr);

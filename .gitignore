@@ -7,8 +7,14 @@ bench_alts
 test_alts
 bench
 data/*.data
+data/*.bin
 data/diabetes.tab.txt
 test_cmlp
 bench_cmlp
 *.glob
 *.aux
+coqLang/.lia.cache
+*.vo
+*.vok
+*.vos
+result

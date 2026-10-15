@@ -6,11 +6,13 @@ COQC ?= coqc
 QFLAGS = -Q TypeNN TypeNN
 
 VO = TypeNN/Basic.vo TypeNN/Forward.vo TypeNN/Backward.vo TypeNN/Surgery.vo \
-     TypeNN/Readout.vo TypeNN/Threshold.vo
+     TypeNN/Readout.vo TypeNN/SignedPower.vo TypeNN/Threshold.vo TypeNN/Graph.vo
 
 all: $(VO)
 
 TypeNN/Forward.vo TypeNN/Backward.vo TypeNN/Surgery.vo: TypeNN/Basic.vo
+TypeNN/SignedPower.vo: TypeNN/Readout.vo
+TypeNN/Graph.vo: TypeNN/Basic.vo TypeNN/Surgery.vo
 
 %.vo: %.v
 	$(COQC) $(QFLAGS) $<

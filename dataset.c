@@ -45,6 +45,12 @@ static double **mat_new(size_t rows, size_t cols)
     return m;
 }
 
+/* Loaders allocate `cap` rows before they know n; free the unused tail. */
+static void trim_rows(Dataset *ds, size_t cap, size_t n)
+{
+    for (size_t i = n; i < cap; i++) { free(ds->X[i]); free(ds->Y[i]); }
+}
+
 void dataset_free(Dataset *ds)
 {
     if (!ds) return;
@@ -134,6 +140,7 @@ int dataset_load_iris(const char *path, Dataset *ds)
         n++;
     }
     fclose(f);
+    trim_rows(ds, cap, n);
     ds->n = n;
     return n > 0 ? 0 : -1;
 }
@@ -171,6 +178,7 @@ int dataset_load_wine(const char *path, Dataset *ds)
         n++;
     }
     fclose(f);
+    trim_rows(ds, cap, n);
     ds->n = n;
     return n > 0 ? 0 : -1;
 }
@@ -215,6 +223,7 @@ int dataset_load_wdbc(const char *path, Dataset *ds)
         n++;
     }
     fclose(f);
+    trim_rows(ds, cap, n);
     ds->n = n;
     return n > 0 ? 0 : -1;
 }
@@ -248,6 +257,7 @@ int dataset_load_diabetes(const char *path, Dataset *ds)
         n++;
     }
     fclose(f);
+    trim_rows(ds, cap, n);
     ds->n = n;
     return n > 0 ? 0 : -1;
 }
@@ -286,8 +296,106 @@ int dataset_load_ionosphere(const char *path, Dataset *ds)
         n++;
     }
     fclose(f);
+    trim_rows(ds, cap, n);
     ds->n = n;
     return n > 0 ? 0 : -1;
+}
+
+/* ---------- Spambase: 57 features, binary label (larger) ---------- */
+
+int dataset_load_spambase(const char *path, Dataset *ds)
+{
+    memset(ds, 0, sizeof(*ds));
+    snprintf(ds->name, sizeof(ds->name), "spambase");
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char line[4096];
+    size_t cap = 5000, n = 0;
+    ds->in = 57;
+    ds->out = 1;
+    ds->classification = 1;
+    ds->X = mat_new(cap, ds->in);
+    ds->Y = mat_new(cap, ds->out);
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '\n' || line[0] == '\0') continue;
+        if (n >= cap) break;
+        char *p = line;
+        int ok = 1;
+        for (int j = 0; j < 57; j++) {
+            char *end = NULL;
+            ds->X[n][j] = strtod(p, &end);
+            if (end == p) { ok = 0; break; }
+            p = end;
+            if (*p == ',') p++;
+        }
+        if (!ok) continue;
+        while (*p == ' ' || *p == ',') p++;
+        ds->Y[n][0] = (*p == '1') ? 1.0 : 0.0;
+        n++;
+    }
+    fclose(f);
+    trim_rows(ds, cap, n);
+    ds->n = n;
+    return n > 0 ? 0 : -1;
+}
+
+/* ---------- Generic float32 binary: <n in out> then n rows of (in + out) floats ---------- */
+
+int dataset_load_bin(const char *path, Dataset *ds)
+{
+    memset(ds, 0, sizeof(*ds));
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    unsigned hdr[3];
+    if (fread(hdr, sizeof(unsigned), 3, f) != 3) { fclose(f); return -1; }
+    size_t n = hdr[0], nin = hdr[1], nout = hdr[2];
+    if (n == 0 || nin == 0 || nout == 0 || n > 100000 || nin > 4096) {
+        fclose(f); return -1;
+    }
+    snprintf(ds->name, sizeof(ds->name), "bin");
+    ds->n = n; ds->in = nin; ds->out = nout;
+    ds->classification = 1;
+    ds->X = mat_new(n, nin);
+    ds->Y = mat_new(n, nout);
+    for (size_t i = 0; i < n; i++) {
+        float *row = malloc((nin + nout) * sizeof(float));
+        if (!row || fread(row, sizeof(float), nin + nout, f) != nin + nout) {
+            free(row); fclose(f); return -1;
+        }
+        for (size_t j = 0; j < nin; j++) ds->X[i][j] = (double)row[j];
+        for (size_t j = 0; j < nout; j++) ds->Y[i][j] = (double)row[nin + j];
+        free(row);
+    }
+    fclose(f);
+    return 0;
+}
+
+/* ---------- Synthetic larger set: sparse interactions ---------- */
+
+int dataset_make_synth(Dataset *ds, size_t n, unsigned seed)
+{
+    memset(ds, 0, sizeof(*ds));
+    snprintf(ds->name, sizeof(ds->name), "synth");
+    if (n < 100) n = 100;
+    ds->n = n;
+    ds->in = 16;
+    ds->out = 1;
+    ds->classification = 1;
+    ds->X = mat_new(n, ds->in);
+    ds->Y = mat_new(n, ds->out);
+    unsigned rng = seed ? seed : 1;
+    for (size_t i = 0; i < n; i++) {
+        for (int j = 0; j < 16; j++) {
+            unsigned r = dataset_xorshift32(&rng);
+            ds->X[i][j] = ((r >> 8) / 16777216.0) * 2.0 - 1.0;
+        }
+        /* sparse interaction: label depends on x0*x1 + x2*x3 + noise */
+        double s = ds->X[i][0] * ds->X[i][1] + ds->X[i][2] * ds->X[i][3];
+        unsigned r = dataset_xorshift32(&rng);
+        double noise = ((r >> 8) / 16777216.0) * 0.4 - 0.2;
+        ds->Y[i][0] = (s + noise > 0.0) ? 1.0 : 0.0;
+    }
+    return 0;
 }
 
 /* Portable xorshift32 for the split. */

@@ -15,24 +15,36 @@ Error: Cannot find a physical path bound to logical path List with prefix Stdlib
 ```
 
 The flake provides it. The sources use the Rocq 9 spelling
-`From Stdlib Require Import`, and build with **no warnings on Rocq
-9.0.0**. The deprecated `map_length` / `seq_length` are replaced by local
-lemmas. Coq 8.x has no `Stdlib` prefix; to use it, replace
-`From Stdlib` with `From Coq`.
+`From Stdlib Require Import`. The deprecated `map_length` / `seq_length` /
+`app_length` are replaced by local lemmas. Coq 8.x has no `Stdlib`
+prefix; to use it, replace `From Stdlib` with `From Coq`
+(`sed -i 's/From Stdlib/From Coq/' TypeNN/*.v`).
+
+The whole development, `SignedPower.v` and `Graph.v` included, checks
+with no error and no message on Rocq 9 (`nix build .#proofs`), and on
+Coq 8.18 through that substitution.
 
 The Or/And algebra is stated over `Z`. Every statement there holds in a
 commutative ring, and those theorems use **no axioms**
 (`Print Assumptions` reports "Closed under the global context"). The
-readout and the threshold are stated over `R`, and use only the standard
-axioms of the real-number library.
+readout, the signed power and the threshold are stated over `R`, and use
+only the standard axioms of the real-number library.
 
 Tactic note: `simpl` unfolds `1 * p` into a `match` that `ring` rejects,
 so the proofs unfold only list functions (`cbn [prod app ...]`).
 
-The theorems cover the architecture and the scaling edits that both
-type-nn models share. The evidence rule of the current type-nn (BIC on a
-measured MSE) is a decision procedure over floating-point measurements.
-It is tested in C (`test_type_nn.c`), not proved.
+The theorems cover the architecture and the edits both variants use
+(chain and graph). The ring files (`Basic`, `Forward`, `Backward`,
+`Surgery`, `Graph`) model an assembly index as a natural number. The C
+code uses a real `a ≥ 1` and the signed power `o^a = sign(o)·|o|^a`.
+`SignedPower.v` states that unit over R and proves the C forward and the
+C gradients. It also shows exactly where the ring model agrees with the
+C unit: `o ≥ 0` or odd `a`. For `o < 0` and even `a` the two differ by
+the sign (`spow_neg_even`).
+
+The decisions — which edit to attempt, the slime-mould feedback, the
+BIC evidence rule, the thresholds — are procedures over floating-point
+measurements. They are tested in C (`test_type_nn_graph.c`), not proved.
 
 | theorem | file | statement |
 |---|---|---|
@@ -61,12 +73,38 @@ It is tested in C (`test_type_nn.c`), not proved.
 | `threshold_between` | Threshold | `η√T ≤ η·T^(3/4) ≤ η·T` for `T ≥ 1` |
 | `threshold_geometric_mean` | Threshold | `θ² = (η√T)·(η·T)` |
 | `threshold_separates` | Threshold | noise / θ = θ / drift = `T^(−1/4)` |
+| `spow_log`, `and_log_space`, `unit_log_space` | SignedPower | the C unit on R: `o^a = sign(o)·e^{a ln\|o\|}`, `A = s·e^ℓ`, `z = F(A) = s·ln(1+e^ℓ)` |
+| `dz_da`, `dz_do_pos`, `dz_do_neg` | SignedPower | the C gradients `∂z/∂a_r = s σ(ℓ) ln\|o_r\|` and `∂z/∂o_r = s σ(ℓ) a_r / o_r` (real derivatives) |
+| `spow_pos_nat`, `spow_neg_odd`, `spow_neg_even` | SignedPower | where the ring model (ℕ exponents) is the C unit: `o > 0`, or odd `a`; for `o < 0`, even `a` they differ by the sign |
+| `path_graph_is_chain` | Graph | a path graph x → v₀ → v₁ → … with weight-1 edges reading every coordinate is `netForward`: the chain is the linked-list graph |
+| `gain_is_weight`, `gain_absorb_exact` | Graph | an edge weight on the values equals the same weight on the destination's columns; re-estimating it with `w'c' = wc` is exact (the C renormalisation) |
+| `merge_zero_block_exact`, `drop_zero_block_exact`, `dummy_edge_exact` | Graph | a merge dummy (a block of new input anywhere, met by zero weights) changes nothing, and dropping it is exact |
+| `branch_exact` | Graph | a branch dummy (one new source coordinate read through one zero column) changes nothing |
+| `vertex_fold_exact` | Graph | a depth edit on an edge is exact when the consumer is folded with the exact affine fit |
 
 **Not covered:**
 
 - floating point;
 - the Adam update itself;
-- real (non-integer) assembly indices in the ring theorems. The
-  log-space forms cover them on `R`.
-- the derivative of F at A = 0. Only A ≠ 0 is proved; the C code uses
-  the limit value 1 there.
+- the derivative of F at A = 0: only A ≠ 0 is proved, and the C code uses
+  the limit value 1 there;
+- the decision procedures: the slime-mould feedback, the BIC evidence
+  rule and the thresholds choose *which* edit to make. The theorems
+  above say what each edit does to the function.
+
+## What the graph theorems do and do not say
+
+- The graph is a superset of the chain: `path_graph_is_chain` shows the
+  chain is the path graph, and skip edges add functions a chain of the
+  same widths cannot compute. The two classes are not claimed equal.
+- The edge weights are a reparameterisation (`gain_is_weight`,
+  `gain_absorb_exact`). They change neither the function nor the
+  optimiser's path in function space: the C code also scales Adam's step
+  on a wrapped column by `1/c`. Their job is to rank edges for the late
+  drops.
+- Merge, branch and Or dummies are exact (`merge_zero_block_exact`,
+  `branch_exact`, `Forward.width_probe_exact`).
+- A depth edit is exact only when the affine fit is exact
+  (`vertex_fold_exact`). The C code fits it on the epoch's training
+  inputs, so in practice it is near-exact: the identity node emits F(x),
+  not x.

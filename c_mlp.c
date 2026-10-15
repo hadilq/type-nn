@@ -19,11 +19,17 @@ static double *zalloc(size_t n) { return (double *)calloc(n ? n : 1, sizeof(doub
 
 CMlp *cmlp_create(size_t in, size_t out, unsigned seed)
 {
+    size_t H = (in <= 4) ? 8 : 16;
+    if (H < out) H = out;
+    return cmlp_create_hidden(in, out, H, seed);
+}
+
+CMlp *cmlp_create_hidden(size_t in, size_t out, size_t hid, unsigned seed)
+{
     CMlp *m = (CMlp *)calloc(1, sizeof(CMlp));
     m->in = in;
     m->out = out;
-    m->hid = (in <= 4) ? 8 : 16;
-    if (m->hid < out) m->hid = out;
+    m->hid = hid ? hid : 1;
     size_t H = m->hid;
     m->W1 = zalloc(H * in);  m->b1 = zalloc(H);
     m->W2 = zalloc(out * H); m->b2 = zalloc(out);

@@ -53,7 +53,7 @@
 
   <!-- SCALING -->
   <text x="64" y="535" class="h" fill="#7ee0a3" font-size="20">THE THREE SCALING PROBLEMS · one dummy rule</text>
-  <text x="64" y="562" class="d">A probe is an identity. Back-prop may move it. Moved past θ = lr·age^¾ → promoted, and a fresh probe replaces it. Late, anything inside the band is dropped.</text>
+  <text x="64" y="562" class="d">A probe is an identity. Back-prop may move it. Moved past θ = lr·age^¾ → promoted, and a fresh probe replaces it. Late, what no longer pays its BIC price (type-nn) or sits in the band (overfit) is dropped.</text>
 
   <!-- Or -->
   <rect x="64" y="585" width="470" height="250" rx="12" fill="#161e28" stroke="#2a3544"/>
