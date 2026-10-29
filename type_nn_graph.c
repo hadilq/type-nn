@@ -1215,10 +1215,14 @@ static void prune_depth(TypeNNGraph *g, double ref)
 
 typedef struct { size_t src, dst; double c; } EdgeKey;
 
+/* Thinnest first; ties by (dst, src) so the order does not depend on the
+   libc qsort (glibc >= 2.37 is not stable). */
 static int ekey_cmp(const void *pa, const void *pb)
 {
     const EdgeKey *a = pa, *b = pb;
-    return (a->c > b->c) - (a->c < b->c);
+    if (a->c != b->c) return (a->c > b->c) - (a->c < b->c);
+    if (a->dst != b->dst) return (a->dst > b->dst) - (a->dst < b->dst);
+    return (a->src > b->src) - (a->src < b->src);
 }
 
 /* Edges in order of their slime-mould weight, thinnest first. An edge
@@ -1264,17 +1268,22 @@ typedef struct {
     size_t v, k, r;           /* Or: node v, unit k, Or r. coord: node v, coord k. column: node v, column k */
     double alone;
     size_t np;
+    size_t seq;               /* listing order: the tie-breaker */
 } Cand;
 
+/* Least damage first; ties in listing order, so the order does not depend
+   on the libc qsort (glibc >= 2.37 is not stable). */
 static int cand_cmp(const void *pa, const void *pb)
 {
     const Cand *a = pa, *b = pb;
-    return (a->alone > b->alone) - (a->alone < b->alone);
+    if (a->alone != b->alone) return (a->alone > b->alone) - (a->alone < b->alone);
+    return (a->seq > b->seq) - (a->seq < b->seq);
 }
 
 static void cand_push(Cand **cs, size_t *nc, size_t *cap, Cand c)
 {
     if (*nc == *cap) { *cap = *cap ? 2 * *cap : 32; *cs = (Cand *)xre(*cs, *cap * sizeof(Cand)); }
+    c.seq = *nc;
     (*cs)[(*nc)++] = c;
 }
 
@@ -1307,7 +1316,7 @@ static void prune_pool(TypeNNGraph *g, double ref)
                 double without = measure(g);
                 memcpy(o->w, w, n * sizeof(double)); o->b = b; o->a = a;
                 free(w);
-                cand_push(&cs, &nc, &cap, (Cand){ 0, v, k, r, without - base, n + 2 });
+                cand_push(&cs, &nc, &cap, (Cand){ 0, v, k, r, without - base, n + 2, 0 });
             }
         if (v + 1 < g->n_nodes)
             for (size_t k = 0; k < l->n_out; k++) {
@@ -1315,7 +1324,7 @@ static void prune_pool(TypeNNGraph *g, double ref)
                 MultiSnap m = coord_ablate(g, v, k, &pp, NULL);
                 double without = measure(g);
                 multi_restore(g, &m);
-                cand_push(&cs, &nc, &cap, (Cand){ 1, v, k, 0, without - base, pp + unit_params(g, v, k) });
+                cand_push(&cs, &nc, &cap, (Cand){ 1, v, k, 0, without - base, pp + unit_params(g, v, k), 0 });
             }
         /* single columns of edges that read other nodes (branching) */
         for (size_t j = 0; j < l->n_in; j++) {
@@ -1325,7 +1334,7 @@ static void prune_pool(TypeNNGraph *g, double ref)
             ColSnap s = cols_ablate(g, v, &j, 1);
             double without = measure(g);
             cols_restore(g, &s);
-            cand_push(&cs, &nc, &cap, (Cand){ 2, v, j, 0, without - base, dst_ors(g, v) });
+            cand_push(&cs, &nc, &cap, (Cand){ 2, v, j, 0, without - base, dst_ors(g, v), 0 });
         }
     }
     qsort(cs, nc, sizeof(Cand), cand_cmp);
